@@ -1,0 +1,16 @@
+[package]
+name = "text2svg"
+author = "tizee"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.72"
+clap = { version = "4.3.19", features = ["derive"] }
+font-kit = "0.11.0"
+pathfinder_geometry = "0.5.1"
+resvg = "0.35.0"
+rustybuzz = "0.8.0"
+svg = "0.13.1"
