@@ -26,6 +26,14 @@ struct Args {
     #[arg(long, conflicts_with = "list", default_value_t = 64)]
     size: u32,
 
+    /// svg fill mode or fill color
+    #[arg(long, conflicts_with = "list", default_value = "none")]
+    fill: String,
+
+    /// font color
+    #[arg(long, conflicts_with = "list", default_value = "#000")]
+    color: String,
+
     /// letter space (em)
     #[arg(long, conflicts_with = "list", default_value_t = 0.1)]
     space: f32,
@@ -66,7 +74,7 @@ fn run() -> Result<(),Error> {
         return Ok(());
     } else if let Some(font) = args.font {
 
-        let mut font_config = FontConfig::new(font,args.size)?;
+        let mut font_config = FontConfig::new(font,args.size,args.fill,args.color)?;
         font_config.set_debug(args.debug)
             .set_letter_space(args.space);
 

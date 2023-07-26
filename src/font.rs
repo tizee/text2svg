@@ -100,13 +100,15 @@ pub struct FontConfig {
     pub font_name: String,
     pub size: u32,
     pub features: Vec<Feature>,
-    pub debug: bool,
     pub faces: HashMap<FontStyle,Font>,
     pub letter_space: f32,
+    pub fill_color: String,
+    pub color: String,
+    pub debug: bool,
 }
 
 impl FontConfig  {
-    pub fn new(font_name: String, size: u32) -> Result<Self,FontError> {
+    pub fn new(font_name: String, size: u32, fill_color: String, color: String) -> Result<Self,FontError> {
         let font_family = SystemSource::new().select_family_by_name(&font_name)?;
 
         let mut faces = HashMap::new();
@@ -144,6 +146,8 @@ impl FontConfig  {
                 Feature::from_str("calt").unwrap(),
                 Feature::from_str("clig").unwrap()
             ],
+            fill_color,
+            color,
             faces,
             letter_space: 0.0,
             debug: false,

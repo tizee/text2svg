@@ -95,6 +95,7 @@ impl Text {
 
 pub struct TextBuilder<'a> {
     pub origin: Point,
+    pub color: &'a str,
     pub fill_color: &'a str,
     pub path_config: PathConfig,
 }
@@ -103,6 +104,7 @@ impl Default for TextBuilder<'_> {
     fn default() -> Self {
         Self {
             origin: Point { x: 0.0, y: 0.0 },
+            color: "#000",
             fill_color: "#000",
             path_config: PathConfig::default(),
         }
@@ -110,13 +112,18 @@ impl Default for TextBuilder<'_> {
 }
 
 impl<'a> TextBuilder<'a> {
-    pub fn set_origin(&mut self, o: Point) -> &Self {
+    pub fn set_origin(&mut self, o: Point) -> &mut Self {
         self.origin = o;
         self
     }
 
-    pub fn set_fill_color(&mut self, color: &'a str) -> &Self {
+    pub fn set_fill_color(&mut self, color: &'a str) -> &mut Self {
         self.fill_color = color;
+        self
+    }
+
+    pub fn set_color(&mut self, color: &'a str) -> &mut Self {
+        self.color = color;
         self
     }
 
@@ -219,7 +226,7 @@ impl<'a> TextBuilder<'a> {
         Text::new(
             Path::new()
                 .set("fill", self.fill_color)
-                .set("stroke", self.fill_color)
+                .set("stroke", self.color)
                 .set("stroke-width", self.path_config.stroke_width.get())
                 .set("stroke-linejoin", self.path_config.get_stroke_linejoin())
                 .set("stroke-linecap", self.path_config.get_stroke_linecap())
