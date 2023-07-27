@@ -35,3 +35,6 @@ WIP
 - [x] Convert text to SVG
   - [x] Ligature support
 - [x] Modifiy SVG structure to add style
+- [x] Convert text file to SVG
+- [ ] code highlight
+- [ ] Export as a lib

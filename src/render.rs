@@ -1,3 +1,5 @@
+use anyhow::Result;
+use resvg::tiny_skia::Point;
 use std::path::PathBuf;
 
 use rustybuzz::Face;
@@ -5,18 +7,57 @@ use rustybuzz::GlyphBuffer;
 
 use crate::font::{FontConfig, FontStyle};
 use crate::svg::Text;
-use svg::node::element::{Group, Style};
+use crate::utils::open_file_by_lines;
+
+use svg::node::element::{Group, Style, Path};
 use svg::Document;
 
-pub fn render_text_to_svg_file(text: &str, font_config: &FontConfig, output: PathBuf) {
+pub fn render_line_to_path(x: f32, y: f32, line: &str, font_config: &FontConfig) -> Option<Text> {
     // shape with harfbuzz algorithm
-    if let Some(glyph_buffer) = text_shape(text, font_config) {
+    if let Some(glyph_buffer) = text_shape(line, font_config) {
         let mut svg_builder = Text::builder();
         svg_builder
+            .set_origin(Point {
+                x,
+                y
+            })
             .set_color(&font_config.color)
             .set_fill_color(&font_config.fill_color);
 
-        let text_path = svg_builder.build(font_config, &glyph_buffer);
+        return Some(svg_builder.build(font_config, &glyph_buffer));
+    }
+    return None;
+}
+
+pub fn render_text_file_to_svg(file: &PathBuf, font_config:&FontConfig, output: PathBuf) {
+    let mut width: u32 = 0;
+    let mut height: u32 = 0;
+
+    if let Ok(lines) = open_file_by_lines(file) {
+        let mut group = Group::new().set("class", "text");
+        for line in lines.iter() {
+            if line.is_empty() {
+                height += font_config.size;
+            }else if let Some(path_line) = render_line_to_path(0.0, height as f32,line,font_config) {
+                width = width.max(path_line.width());
+                height += path_line.height();
+                group = group.add(path_line.path);
+            }
+        }
+
+        let doc = Document::new()
+            .set("height", height)
+            .set("width", width)
+            .set("viewBox", format!("0 0 {} {}", width, height))
+            .add(group);
+
+        svg::save(output, &doc).unwrap();
+    }
+}
+
+pub fn render_text_to_svg_file(text: &str, font_config: &FontConfig, output: PathBuf) {
+    // shape with harfbuzz algorithm
+    if let Some(text_path) = render_line_to_path(0.0, 0.0, text, font_config) {
 
         let style = Style::new(
             "

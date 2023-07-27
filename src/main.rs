@@ -1,6 +1,7 @@
 mod font;
 mod render;
 mod svg;
+mod utils;
 
 use anyhow::Error;
 use clap::Parser;
@@ -11,8 +12,12 @@ use std::path::PathBuf;
 #[command(author,about,version,long_about=None)]
 struct Args {
     /// input text string
-    #[arg(short, long, conflicts_with = "list")]
+    #[arg(conflicts_with = "list", conflicts_with = "file")]
     text: Option<String>,
+
+    /// input file
+    #[arg(long,short,conflicts_with = "list", conflicts_with = "text")]
+    file: Option<PathBuf>,
 
     /// output svg file path
     #[arg(short, long, conflicts_with = "list", default_value = "output.svg")]
@@ -89,8 +94,16 @@ fn run() -> Result<(),Error> {
                 args.output.unwrap(),
             );
             return Ok(());
+        } else if let Some(file) = args.file {
+            render::render_text_file_to_svg(
+                &file,
+                &font_config,
+                args.output.unwrap(),
+            );
+            return Ok(());
+
         }
         return Ok(());
     }
-    return Ok(());
+    Ok(())
 }
