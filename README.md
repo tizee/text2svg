@@ -1,40 +1,34 @@
 # text2svg
 
-A tool help to convert text to svg file
+A tool help to convert text to svg file with highlighting support.
 
 ## Usage
 
 ```
-Usage: text2svg [OPTIONS]
+Usage: text2svg [OPTIONS] [TEXT]
+
+Arguments:
+  [TEXT]  input text string
 
 Options:
-  -t, --text <TEXT>      input text string
+  -f, --file <FILE>      input file
   -o, --output <OUTPUT>  output svg file path [default: output.svg]
       --font <FONT>      font
       --size <SIZE>      font size [default: 64]
       --fill <FILL>      svg fill mode or fill color [default: none]
       --color <COLOR>    font color [default: #000]
       --space <SPACE>    letter space (em) [default: 0.1]
+      --highlight        highlight mode
+      --theme <THEME>    highlight theme or path to theme [default: base16-ocean.dark]
+      --list-syntax      list supported file types/syntax
+      --list-theme       list supported theme
   -d, --debug            debug mode
-      --list             list installed fonts
+      --list-fonts       list installed fonts
   -h, --help             Print help
   -V, --version          Print version
-```
-
-```
-text2svg --font "Ubuntu Mono" --text "Hello,world >= <= -> <
-- == != ===" --output "hello.svg" --space 0 --color red
 ```
 
 ## How it works
 
 WIP
 
-## Roadmap
-
-- [x] Convert text to SVG
-  - [x] Ligature support
-- [x] Modifiy SVG structure to add style
-- [x] Convert text file to SVG
-- [ ] code highlight
-- [ ] Export as a lib

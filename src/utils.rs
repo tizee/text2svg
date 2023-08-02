@@ -1,7 +1,8 @@
+// some useful utility functions
 use anyhow::{Result, anyhow};
 use std::path::Path;
 use std::fs::File;
-use std::io::{Read,BufRead, BufReader};
+use std::io::{Read, BufRead, BufReader};
 
 pub fn open_file_by_lines<P: AsRef<Path>>(path: P)  -> Result<Vec<String>> {
     let path = path.as_ref();

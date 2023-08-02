@@ -127,17 +127,17 @@ impl<'a> TextBuilder<'a> {
         self
     }
 
-    pub fn build(&self, font_config: &FontConfig, glyphs: &GlyphBuffer) -> Text {
-        let ft_face = font_config.get_regular_font().unwrap();
+    pub fn build(&self, font_config: &FontConfig, font_style: &FontStyle,glyphs: &GlyphBuffer) -> Text {
+        let ft_face = font_config.get_font_by_style(font_style).unwrap();
         let metrics = ft_face.metrics();
 
         let origin_glyph_height = metrics.ascent - metrics.descent;
         // target size
-        let glyph_height = font_config.size as f32;
+        let glyph_height = font_config.get_size() as f32;
         // factor used to convert origin size to given size
         let scale_factor = glyph_height / origin_glyph_height;
 
-        if font_config.debug {
+        if font_config.get_debug() {
             println!(
                 "origin height: {:?} scaled height: {:?} scale_factor:{:?} units_per_em:{:?}",
                 origin_glyph_height, glyph_height, scale_factor, metrics.units_per_em
@@ -156,7 +156,7 @@ impl<'a> TextBuilder<'a> {
 
         let mut prev_space_glyph = true;
         let letter_space =
-            scale_factor * font_config.letter_space * metrics.units_per_em as f32;
+            scale_factor * font_config.get_letter_space() * metrics.units_per_em as f32;
         let mut y_offset = i16::MAX;
 
         // convert glyph outlines to svg
@@ -164,7 +164,7 @@ impl<'a> TextBuilder<'a> {
             let glyph_id = glyph_infos[i].glyph_id;
             let glyph_pos = glyph_positions[i];
 
-            if font_config.debug {
+            if font_config.get_debug() {
                 println!(
                     "{:?}/{:?} x:{:?} glyph id: {:?} {:?} ",
                     i + 1,
@@ -191,7 +191,7 @@ impl<'a> TextBuilder<'a> {
                 hb_face.outline_glyph(GlyphId(glyph_id as u16), &mut glyph_builder)
             {
                 prev_space_glyph = false;
-                if font_config.debug {
+                if font_config.get_debug() {
                     println!("bbox for glyph: {:?}", hb_bbox);
                 }
                 if hb_bbox.y_min < y_offset {
@@ -216,7 +216,7 @@ impl<'a> TextBuilder<'a> {
             y_max: (self.origin.y + glyph_height + y_offset.abs() as f32 * scale_factor).ceil() as i16,
         };
 
-        if font_config.debug {
+        if font_config.get_debug() {
             println!(
                 "x_min:{:?} y_min:{:?} x_max:{:?} y_max:{:?}",
                 bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max
