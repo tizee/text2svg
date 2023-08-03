@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use clap::ValueEnum;
 use font_kit::error::{FontLoadingError, SelectionError};
 use font_kit::font::Font;
 use font_kit::properties::{Style, Weight};
@@ -18,7 +19,8 @@ pub fn fonts() -> Vec<String> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[derive(ValueEnum, Debug, PartialEq, Clone, Eq, Hash)]
+#[value(rename_all="lower")]
 pub enum FontStyle {
     // Weight
     REGULAR,
@@ -31,16 +33,13 @@ pub enum FontStyle {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParseFontStyleErr;
 
-impl FromStr for FontStyle {
-    type Err = ParseFontStyleErr;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "regular" => Ok(FontStyle::REGULAR),
-            "medium" => Ok(FontStyle::MEDIUM),
-            "bold" => Ok(FontStyle::BOLD),
-            "italic" => Ok(FontStyle::ITALIC),
-            _ => Err(ParseFontStyleErr),
+impl ToString for FontStyle {
+    fn to_string(&self) -> String {
+        match self {
+            &FontStyle::REGULAR => "regular".to_string(),
+            &FontStyle::MEDIUM => "medium".to_string(),
+            &FontStyle::BOLD => "bold".to_string(),
+            &FontStyle::ITALIC => "italic".to_string(),
         }
     }
 }

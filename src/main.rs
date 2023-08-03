@@ -8,6 +8,7 @@ use anyhow::Error;
 use clap::Parser;
 use font::{FontConfig, FontStyle};
 use highlight::HighlightSetting;
+use render::RenderConfig;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -26,7 +27,7 @@ struct Args {
     output: Option<PathBuf>,
 
     /// font
-    #[arg(long )]
+    #[arg(long)]
     font: Option<String>,
 
     /// font size
@@ -34,12 +35,20 @@ struct Args {
     size: u32,
 
     /// svg fill mode or fill color
-    #[arg(long, default_value = "none")]
+    #[arg(long, conflicts_with="highlight", default_value = "none")]
     fill: String,
 
     /// font color
-    #[arg(long, default_value = "#000")]
+    #[arg(long, conflicts_with="highlight", default_value = "#000")]
     color: String,
+
+    /// animation style flag
+    #[arg(long, conflicts_with="highlight")]
+    animate: bool,
+
+    /// font style
+    #[arg(value_enum, long, conflicts_with="highlight", default_value = "regular")]
+    style: Option<FontStyle>,
 
     /// letter space (em)
     #[arg(long, default_value_t = 0.1)]
@@ -122,10 +131,13 @@ fn run() -> Result<(),Error> {
             println!("{:?}", font_config);
         }
 
+        let render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::REGULAR));
+
         if let Some(text) = args.text {
             render::render_text_to_svg_file(
                 &text,
                 &mut font_config,
+                &render_config,
                 args.output.unwrap(),
             );
             return Ok(());
@@ -141,6 +153,7 @@ fn run() -> Result<(),Error> {
                 render::render_text_file_to_svg(
                     &file,
                     &mut font_config,
+                    &render_config,
                     args.output.unwrap(),
                 );
             }
