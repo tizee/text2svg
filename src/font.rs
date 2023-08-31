@@ -122,6 +122,9 @@ impl FontConfig {
                         faces.insert(FontStyle::BOLD, font);
                     } else if properties.weight == Weight::MEDIUM {
                         faces.insert(FontStyle::MEDIUM, font);
+                    } else {
+                        // fallback to regular
+                        faces.insert(FontStyle::REGULAR, font);
                     }
                 }
                 Style::Italic => {

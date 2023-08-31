@@ -18,6 +18,10 @@ struct Args {
     #[arg(conflicts_with = "file")]
     text: Option<String>,
 
+    /// max width per line
+    #[arg(long, conflicts_with = "highlight")]
+    width: Option<usize>,
+
     /// input file
     #[arg(long,short, conflicts_with = "text")]
     file: Option<PathBuf>,
@@ -131,7 +135,8 @@ fn run() -> Result<(),Error> {
             println!("{:?}", font_config);
         }
 
-        let render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::REGULAR));
+        let mut render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::REGULAR));
+        render_config.set_max_width(args.width);
 
         if let Some(text) = args.text {
             render::render_text_to_svg_file(

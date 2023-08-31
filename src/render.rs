@@ -11,6 +11,7 @@ use crate::font::{FontConfig, FontStyle};
 use crate::highlight::{HighlightColor, HighlightFontStyle, HighlightSetting};
 use crate::svg::Text;
 use crate::utils::open_file_by_lines;
+use crate::utils::open_file_by_lines_width;
 
 use svg::node::element::{Group, Style};
 use svg::Document;
@@ -19,15 +20,22 @@ use syntect::highlighting::Style as TokenStyle;
 // render config for non-highlight mode
 pub struct RenderConfig {
     animate: bool,
-    font_style: FontStyle
+    font_style: FontStyle,
+    max_width: Option<usize>,
 }
 
 impl RenderConfig {
     pub fn new(animate: bool, style: FontStyle) -> Self {
         Self {
             animate,
-            font_style: style
+            font_style: style,
+            max_width: None,
         }
+    }
+
+    pub fn set_max_width(&mut self, width: Option<usize>) -> &mut Self {
+        self.max_width = width;
+        self
     }
 
     pub fn get_font_style(&self) -> &FontStyle {
@@ -129,9 +137,14 @@ pub fn render_token_to_path(
     None
 }
 
-pub fn render_text_to_path(x: f32, y: f32, line: &str, font_config: &mut FontConfig, style: &FontStyle) -> Option<Text> {
+pub fn render_text_to_path(x: f32, y: f32, line: &str, font_config: &mut FontConfig, render_config: &RenderConfig) -> Option<Text> {
+    let style = render_config.get_font_style();
+
     // shape with harfbuzz algorithm
     if let Some(glyph_buffer) = text_shape(line, font_config, style) {
+        if font_config.get_debug() {
+            println!("shape line: {:?}", line);
+        }
         let mut svg_builder = Text::builder();
         let color = font_config.get_color().as_str();
         let fill_color = font_config.get_fill_color().as_str();
@@ -141,6 +154,10 @@ pub fn render_text_to_path(x: f32, y: f32, line: &str, font_config: &mut FontCon
             .set_fill_color(fill_color);
 
         return Some(svg_builder.build(font_config, style, &glyph_buffer));
+    }
+
+    if font_config.get_debug() {
+        eprintln!("failed to shape with harfbuzz:\n{:?}", line);
     }
     None
 }
@@ -164,13 +181,23 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
     let mut width: u32 = 0;
     let mut height: u32 = 0;
 
-    if let Ok(lines) = open_file_by_lines(file) {
+    let file_lines = if render_config.max_width.is_none() {
+        open_file_by_lines(file)
+    } else {
+        open_file_by_lines_width(file, render_config.max_width.unwrap())
+    };
+
+    if font_config.get_debug() {
+        println!("file lines : {:?}", file_lines);
+    }
+
+    if let Ok(lines) = file_lines {
         let mut group = Group::new().set("class", "text");
         for line in lines.iter() {
             if line.is_empty() {
                 height += font_config.get_size();
             } else if let Some(path_line) =
-                render_text_to_path(0.0, height as f32, line, font_config, render_config.get_font_style())
+                render_text_to_path(0.0, height as f32, line, font_config, render_config)
             {
                 width = width.max(path_line.width());
                 height += path_line.height();
@@ -193,7 +220,7 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
 
 pub fn render_text_to_svg_file(text: &str, font_config: &mut FontConfig,render_config: &RenderConfig, output: PathBuf) {
     // shape with harfbuzz algorithm
-    if let Some(text_path) = render_text_to_path(0.0, 0.0, text, font_config, render_config.get_font_style()) {
+    if let Some(text_path) = render_text_to_path(0.0, 0.0, text, font_config, render_config) {
         let height = text_path.height();
         let width = text_path.width();
         let view_box = text_path.get_viewbox();
@@ -228,6 +255,7 @@ fn text_shape(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) 
             }
         }
     }
+
     if let Some(ft_face) = font_config.get_font_by_style(font_style) {
         if let Some(font_data) = ft_face.copy_font_data() {
             if let Some(hb_face) = Face::from_slice(&font_data, 0) {
@@ -238,12 +266,21 @@ fn text_shape(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) 
 
                 if font_config.get_debug() {
                     let format_flags = rustybuzz::SerializeFlags::default();
-                    println!("{:?}", glyph_buffer.serialize(&hb_face, format_flags));
+                    println!("rustybuzz format_flags:\n {:?}", glyph_buffer.serialize(&hb_face, format_flags));
                 }
 
                 return Some(glyph_buffer);
+            } else {
+                eprintln!("Failed to load font data {:?}", font_config);
             }
+        } else {
+            eprintln!("Failed to get font data {:?}", font_config);
         }
+    } else {
+        eprintln!("Failed to get font style {:?}", font_config);
     }
+
+    eprintln!("Failed to shape with font config {:?}", font_config);
+
     None
 }

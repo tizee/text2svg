@@ -16,3 +16,4 @@
   - [ ] Line highlight
   - [x] render highlight
 - [ ] Export as a lib
+- [x] max width
