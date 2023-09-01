@@ -23,11 +23,17 @@ pub fn fonts() -> Vec<String> {
 #[value(rename_all="lower")]
 pub enum FontStyle {
     // Weight
-    REGULAR,
-    MEDIUM,
-    BOLD,
+    Thin,
+    ExtraLight,
+    Light,
+    Regular,
+    Medium,
+    SemiBold,
+    Bold,
+    ExtraBold,
+    Black,
     // Style
-    ITALIC,
+    Italic,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,11 +41,17 @@ pub struct ParseFontStyleErr;
 
 impl ToString for FontStyle {
     fn to_string(&self) -> String {
-        match self {
-            &FontStyle::REGULAR => "regular".to_string(),
-            &FontStyle::MEDIUM => "medium".to_string(),
-            &FontStyle::BOLD => "bold".to_string(),
-            &FontStyle::ITALIC => "italic".to_string(),
+        match *self {
+            FontStyle::Thin => "thin".to_string(),
+            FontStyle::Light => "light".to_string(),
+            FontStyle::ExtraLight => "extra_light".to_string(),
+            FontStyle::Regular => "regular".to_string(),
+            FontStyle::Medium => "medium".to_string(),
+            FontStyle::Bold => "bold".to_string(),
+            FontStyle::SemiBold => "semi_bold".to_string(),
+            FontStyle::ExtraBold => "extra_bold".to_string(),
+            FontStyle::Black => "black".to_string(),
+            FontStyle::Italic => "italic".to_string(),
         }
     }
 }
@@ -93,6 +105,63 @@ pub struct FontConfig {
     debug: bool,
 }
 
+// Get font style from keywords in its full name
+fn font_full_name_to_weight(name: String) -> Option<FontStyle> {
+    let name = name.to_lowercase();
+    // Search longer patterns first
+    if name.contains("extralight") {
+        return Some(FontStyle::ExtraLight);
+    }
+    if name.contains("light") {
+        return Some(FontStyle::Light);
+    }
+    if name.contains("medium") {
+        return Some(FontStyle::Medium);
+    }
+    if name.contains("regular") {
+        return Some(FontStyle::Regular);
+    }
+    if name.contains("semibold") {
+        return Some(FontStyle::SemiBold);
+    }
+    if name.contains("bold") {
+        return Some(FontStyle::Bold);
+    }
+    // This means we cannot determine its style from the full name.
+    // Then we could use its weight to determine its style.
+    None
+}
+
+// Approximate font weight as flooring operation in math
+fn approximate_font_weight(weight: Weight) -> FontStyle {
+    let w = weight.0;
+    if w >= Weight::THIN.0 &&  w < Weight::EXTRA_LIGHT.0 {
+        return FontStyle::Thin;
+    }
+    if w >= Weight::EXTRA_LIGHT.0 &&  w < Weight::LIGHT.0 {
+        return FontStyle::ExtraLight;
+    }
+    if w >= Weight::LIGHT.0 &&  w < Weight::NORMAL.0 {
+        return FontStyle::Light;
+    }
+    if w >= Weight::NORMAL.0 &&  w < Weight::MEDIUM.0 {
+        return FontStyle::Regular;
+    }
+    if w >= Weight::MEDIUM.0 &&  w < Weight::SEMIBOLD.0 {
+        return FontStyle::Medium;
+    }
+    if w >= Weight::SEMIBOLD.0 &&  w < Weight::BOLD.0 {
+        return FontStyle::SemiBold;
+    }
+    if w >= Weight::BOLD.0 &&  w < Weight::EXTRA_BOLD.0 {
+        return FontStyle::Bold;
+    }
+    if w >= Weight::EXTRA_BOLD.0 &&  w < Weight::BLACK.0 {
+        return FontStyle::ExtraBold;
+    }
+    FontStyle::Black
+}
+
 impl FontConfig {
     pub fn new(
         font_name: String,
@@ -107,30 +176,29 @@ impl FontConfig {
 
         for handle in font_family.fonts() {
             let font = handle.load()?;
-
             let properties = font.properties();
 
             if debug {
-                println!("font properties {:?}", properties);
+                println!("font name:\n {:?}", font.full_name());
+                println!("font properties:\n {:?}", properties);
+            }
+
+            if let Some(style) = font_full_name_to_weight(font.full_name()) {
+                faces.insert(style, font);
+                continue;
             }
 
             match properties.style {
                 Style::Normal => {
-                    if properties.weight == Weight::NORMAL {
-                        faces.insert(FontStyle::REGULAR, font);
-                    } else if properties.weight == Weight::BOLD {
-                        faces.insert(FontStyle::BOLD, font);
-                    } else if properties.weight == Weight::MEDIUM {
-                        faces.insert(FontStyle::MEDIUM, font);
-                    } else {
-                        // fallback to regular
-                        faces.insert(FontStyle::REGULAR, font);
-                    }
-                }
+                    let weight = approximate_font_weight(properties.weight);
+                    faces.insert(weight, font);
+                },
                 Style::Italic => {
-                    faces.insert(FontStyle::ITALIC, font);
+                    faces.insert(FontStyle::Italic, font);
                 }
-                _ => (),
+                _ => {
+                    eprintln!("Unsupported font style\n {:?}", properties);
+                },
             }
         }
         let mut feature_map = HashMap::new();
@@ -139,6 +207,10 @@ impl FontConfig {
         feature_map.insert("calt".to_owned(),Feature::from_str("calt").unwrap());
         feature_map.insert("clig".to_owned(),Feature::from_str("clig").unwrap());
         let features = feature_map.values().cloned().collect();
+
+        if debug {
+            println!("faces:\n {:?}", faces);
+        }
 
         // now only supports horizontal writing mode default features
         Ok(Self {
@@ -175,7 +247,7 @@ impl FontConfig {
     }
 
     pub fn get_regular_font(&self) -> Option<&Font> {
-        self.faces.get(&FontStyle::REGULAR)
+        self.faces.get(&FontStyle::Regular)
     }
 
     pub fn get_font_by_style(&self, style: &FontStyle) -> Option<&Font> {

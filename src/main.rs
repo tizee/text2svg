@@ -135,7 +135,7 @@ fn run() -> Result<(),Error> {
             println!("{:?}", font_config);
         }
 
-        let mut render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::REGULAR));
+        let mut render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::Regular));
         render_config.set_max_width(args.width);
 
         if let Some(text) = args.text {

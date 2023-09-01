@@ -243,19 +243,6 @@ pub fn render_text_to_svg_file(text: &str, font_config: &mut FontConfig,render_c
 /// Shape text with font default size (units_per_em)
 /// Therefore we need to scale these glyphs later according to the size
 fn text_shape(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) -> Option<GlyphBuffer> {
-    match font_style {
-        FontStyle::ITALIC => {
-            if !font_config.has_feature("ital") {
-                font_config.add_feature("ital");
-            }
-        }
-        _ => {
-            if font_config.has_feature("ital") {
-                font_config.remove_feature("ital");
-            }
-        }
-    }
-
     if let Some(ft_face) = font_config.get_font_by_style(font_style) {
         if let Some(font_data) = ft_face.copy_font_data() {
             if let Some(hb_face) = Face::from_slice(&font_data, 0) {

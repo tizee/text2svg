@@ -74,12 +74,12 @@ impl HighlightFontStyle {
     }
     pub fn get_style(&self) -> FFontStyle {
         if self.inner.intersects(FontStyle::ITALIC) {
-            return FFontStyle::ITALIC;
+            return FFontStyle::Italic;
         }
         if self.inner.intersects(FontStyle::BOLD) {
-            return FFontStyle::BOLD;
+            return FFontStyle::Bold;
         }
-        FFontStyle::REGULAR
+        FFontStyle::Regular
     }
 }
 
@@ -91,9 +91,9 @@ use super::*;
   fn test_font_style() {
       let bold_italic =  FontStyle::ITALIC | FontStyle::BOLD;
       let italic_style = HighlightFontStyle::new(bold_italic);
-      assert_eq!(italic_style.get_style(),FFontStyle::ITALIC);
+      assert_eq!(italic_style.get_style(),FFontStyle::Italic);
       let bold=  FontStyle::BOLD;
       let bold_style = HighlightFontStyle::new(bold);
-      assert_eq!(bold_style.get_style(),FFontStyle::BOLD);
+      assert_eq!(bold_style.get_style(),FFontStyle::Bold);
   }
 }
