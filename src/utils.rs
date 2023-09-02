@@ -89,7 +89,7 @@ impl<R: Read> Iterator for WidthIter<R> {
                 self.buffer.push(ch_u8);
                 if let Ok(line) = std::str::from_utf8(&self.buffer) {
                     char_counter = line.chars().count();
-                    println!("buffer:\n{:?}", line);
+                    // println!("buffer:\n{:?}", line);
                 }
             } else {
                 self.eof = true;
@@ -112,7 +112,7 @@ impl<R: Read> Iterator for WidthIter<R> {
                 let mut last_word = String::new();
 
                 if let Some((space_idx,_)) = cur_line.char_indices().rev().find(|(_,c)| c.is_ascii_whitespace()) {
-                    println!("space index {:?} in {:?}", space_idx, cur_line);
+                    // println!("space index {:?} in {:?}", space_idx, cur_line);
                     // For All ASCII text, if the whitespace is not the last character,
                     // then this means we have borken up a word.
                     if space_idx != cur_line.chars().count() - 1 {
@@ -121,7 +121,7 @@ impl<R: Read> Iterator for WidthIter<R> {
                         if char::from_u32(*cur_line.as_bytes().get(space_idx).unwrap() as u32).unwrap().is_ascii_whitespace() {
                         let (line, part_word) = cur_line.split_at(space_idx);
                             last_word.push_str(part_word.trim_start());
-                            println!("line:\n {:?}\npart_word:\n{:?}", line, part_word.trim_start());
+                            // println!("line:\n {:?}\npart_word:\n{:?}", line, part_word.trim_start());
                             self.buffer = line.trim_end().as_bytes().to_vec();
                         }
                     }
