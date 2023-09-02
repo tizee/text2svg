@@ -2,7 +2,14 @@
 name = "text2svg"
 authors = ["tizee"]
 version = "0.1.0"
+description = "A command line tool help convert text to svg file"
+readme = "README.md"
+homepage = "https://github.com/tizee/text2svg"
+repository = "https://github.com/tizee/text2svg"
+license = "MIT"
 edition = "2021"
+keywords = ["cli","svg","tool"]
+categories = ["command-line-utilities"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
