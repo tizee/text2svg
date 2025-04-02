@@ -1,7 +1,7 @@
 [package]
 name = "text2svg"
 authors = ["tizee"]
-version = "0.1.0"
+version = "0.2.0"
 description = "A command line tool help convert text to svg file"
 readme = "README.md"
 homepage = "https://github.com/tizee/text2svg"

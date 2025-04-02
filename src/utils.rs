@@ -67,51 +67,41 @@ impl<R: BufRead> WidthLineIterator<R> {
 impl<R: BufRead> Iterator for WidthLineIterator<R> {
     type Item = String;
 
-    fn next(&mut self) -> Option<Self::Item> {
+        fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // If buffer has content exceeding max_width, process it first
+            // Process buffer first if exceeding max_width
             if self.buffer.chars().count() > self.max_width {
                 let (line_part, remaining_part) = split_line(&self.buffer, self.max_width);
                 self.buffer = remaining_part;
                 return Some(line_part);
             }
 
-            // Read a new line from the reader
+            // If buffer has content within max_width, return it
+            if !self.buffer.is_empty() {
+                let buffer_content = std::mem::take(&mut self.buffer);
+                return Some(buffer_content);
+            }
+
+            // Buffer empty, read a new line
             let mut line = String::new();
             match self.reader.read_line(&mut line) {
-                Ok(0) => { // EOF
-                    // If buffer still has content, return it as the last line
-                    if !self.buffer.is_empty() {
-                        let last_part = std::mem::take(&mut self.buffer);
-                        return Some(last_part);
-                    } else {
-                        return None; // No more lines and buffer is empty
-                    }
-                }
+                Ok(0) => return None, // EOF
                 Ok(_) => { // Successfully read a line
-                    // Prepend buffer content to the newly read line
-                    self.buffer.push_str(&line.trim_end_matches(|c| c == '\r' || c == '\n'));
+                    let trimmed_line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
 
-                    // If the combined buffer now exceeds max_width, process it
-                    if self.buffer.chars().count() > self.max_width {
-                        let (line_part, remaining_part) = split_line(&self.buffer, self.max_width);
+                    // If line exceeds max_width, split it
+                    if trimmed_line.chars().count() > self.max_width {
+                        let (line_part, remaining_part) = split_line(&trimmed_line, self.max_width);
                         self.buffer = remaining_part;
                         return Some(line_part);
                     } else {
-                        // Line (with buffer content) fits, return it and clear buffer
-                        let full_line = std::mem::take(&mut self.buffer);
-                        return Some(full_line);
+                        // Line fits within max_width
+                        return Some(trimmed_line);
                     }
                 }
                 Err(e) => {
                     eprintln!("Error reading line: {}", e);
-                    // Treat error as EOF, return any remaining buffer content
-                     if !self.buffer.is_empty() {
-                        let last_part = std::mem::take(&mut self.buffer);
-                        return Some(last_part);
-                    } else {
-                        return None;
-                    }
+                    return None;
                 }
             }
         }
@@ -121,7 +111,7 @@ impl<R: BufRead> Iterator for WidthLineIterator<R> {
 // Helper function to split a line at max_width, trying to wrap at whitespace.
 fn split_line(line: &str, max_width: usize) -> (String, String) {
     if line.chars().count() <= max_width {
-        return (line.to_string(), String::new());
+        return (line.trim_end().to_string(), String::new());
     }
 
     // Find the character index corresponding to max_width
@@ -130,13 +120,12 @@ fn split_line(line: &str, max_width: usize) -> (String, String) {
         split_char_index = idx;
         break;
     }
-     // If max_width lands exactly at the end, handle potential edge case (though unlikely with > check)
+    // If max_width lands exactly at the end, handle potential edge case
     if split_char_index == 0 && line.chars().count() > max_width {
          split_char_index = line.char_indices().nth(max_width).map(|(i, _)| i).unwrap_or(line.len());
     }
 
-
-    // Look backwards from the split point for whitespace (only for ASCII for simplicity)
+    // Look backwards from the split point for whitespace
     let potential_split_point = &line[..split_char_index];
     let wrap_index = potential_split_point
         .char_indices()
@@ -145,15 +134,14 @@ fn split_line(line: &str, max_width: usize) -> (String, String) {
         .map(|(i, _)| i);
 
     if let Some(idx) = wrap_index {
-        // Found whitespace: split before it, trim whitespace from end of first part
-        // and start of second part.
+        // Found whitespace: split before it, trim whitespace
         let first_part = potential_split_point[..idx].trim_end().to_string();
         let second_part = line[idx..].trim_start().to_string();
         (first_part, second_part)
     } else {
-        // No whitespace found before split point, or non-ASCII: hard break at max_width chars
+        // No whitespace found: hard break at max_width chars
         let (first_part, second_part) = line.split_at(split_char_index);
-        (first_part.to_string(), second_part.to_string())
+        (first_part.to_string(), second_part.trim_start().to_string()) // Added trim_start() here
     }
 }
 
