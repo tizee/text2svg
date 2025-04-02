@@ -5,197 +5,288 @@ use std::path::Path;
 use std::fs::File;
 use std::io::{Read, BufRead, BufReader, Bytes};
 
-// the width is actually the max characters for a line
-pub fn open_file_by_lines_width<P: AsRef<Path>>(path: P, step: usize)  -> Result<Vec<String>> {
+// Reads file line by line, splitting lines longer than `max_chars_per_line`.
+// Tries to wrap at whitespace for ASCII text.
+pub fn open_file_by_lines_width<P: AsRef<Path>>(path: P, max_chars_per_line: usize) -> Result<Vec<String>> {
     let path = path.as_ref();
     if path.exists() && path.is_file() {
-        return match File::open(path) {
-            Ok(file) => Ok(read_file_by_chars(file,step)),
-            Err(err) => Err(anyhow!(format!("{}: {}",path.display(),err))),
-        };
+        match File::open(path) {
+            Ok(file) => {
+                let reader = BufReader::new(file);
+                let width_iter = WidthLineIterator::new(reader, max_chars_per_line);
+                Ok(width_iter.collect())
+            },
+            Err(err) => Err(anyhow!("{}: {}", path.display(), err)),
+        }
+    } else {
+        Err(anyhow!(
+            "{}: doesn't exist or is not a regular file", path.display()))
     }
-    Err(anyhow!(format!(
-                "{}: doesn't exist or is not a regular file", path.display())))
 }
 
-
-pub fn open_file_by_lines<P: AsRef<Path>>(path: P)  -> Result<Vec<String>> {
+// Reads file line by line without width constraints.
+pub fn open_file_by_lines<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
     let path = path.as_ref();
     if path.exists() && path.is_file() {
-        return match File::open(path) {
-            Ok(file) => Ok(read_file_by_lines(file)),
-            Err(err) => Err(anyhow!(format!("{}: {}",path.display(),err))),
-        };
+        match File::open(path) {
+            Ok(file) => {
+                let reader = BufReader::new(file);
+                let lines = reader.lines().collect::<Result<Vec<String>, _>>()
+                    .map_err(|e| anyhow!("{}: {}", path.display(), e))?;
+                Ok(lines)
+            },
+            Err(err) => Err(anyhow!("{}: {}", path.display(), err)),
+        }
+    } else {
+        Err(anyhow!(
+            "{}: doesn't exist or is not a regular file", path.display()))
     }
-    Err(anyhow!(format!(
-                "{}: doesn't exist or is not a regular file", path.display())))
 }
 
-fn read_file_by_lines<R: Read>(file: R) -> Vec<String> {
-    let reader = BufReader::new(file);
-    let mut lines = vec![];
-    reader.lines().for_each(|line| {
-        let line = line.unwrap();
-        lines.push(line);
-    });
-    lines
+
+// --- WidthLineIterator ---
+// Iterator that reads lines from a BufReader, but splits lines exceeding
+// a specified character width, attempting word wrapping for ASCII.
+
+struct WidthLineIterator<R: BufRead> {
+    reader: R,
+    max_width: usize,
+    buffer: String, // Holds leftover part of a line for the next iteration
 }
 
-pub struct WidthIter<R> {
-    byte_iter: Bytes<BufReader<R>>,
-    step: usize,
-    buffer: Vec<u8>,
-    eof: bool,
-    last_word: Option<String>,
-}
-
-impl<R> WidthIter<R> {
-    pub fn new(iter: Bytes<BufReader<R>>,step: usize) -> Self {
-        Self {
-            byte_iter: iter,
-            step,
-            buffer: Vec::new(),
-            last_word: None,
-            eof: false,
+impl<R: BufRead> WidthLineIterator<R> {
+    fn new(reader: R, max_width: usize) -> Self {
+        WidthLineIterator {
+            reader,
+            max_width,
+            buffer: String::new(),
         }
     }
 }
 
-impl<R: Read> Iterator for WidthIter<R> {
+impl<R: BufRead> Iterator for WidthLineIterator<R> {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.eof {
-            return None;
-        }
-
-        let mut char_counter = 0;
-        if let Some(last_word) = &self.last_word {
-            self.buffer.extend(last_word.bytes());
-            char_counter += last_word.chars().count();
-            self.last_word = None;
-        }
-
-        // Take at most step-length long string then append with line break character.
-        // Then it falls back to the same logic for the line iterator.
-        while char_counter < self.step {
-            if let Some(Ok(ch_u8)) = self.byte_iter.next() {
-
-                if ch_u8 == b'\n' {
-                    // When encounter line break, it means this line does not exceed max width.
-                    break;
-                }
-
-                self.buffer.push(ch_u8);
-                if let Ok(line) = std::str::from_utf8(&self.buffer) {
-                    char_counter = line.chars().count();
-                    // println!("buffer:\n{:?}", line);
-                }
-            } else {
-                self.eof = true;
-                break;
+        loop {
+            // If buffer has content exceeding max_width, process it first
+            if self.buffer.chars().count() > self.max_width {
+                let (line_part, remaining_part) = split_line(&self.buffer, self.max_width);
+                self.buffer = remaining_part;
+                return Some(line_part);
             }
-        }
 
-        if self.eof && self.buffer.is_empty() {
-            return None;
-        }
-
-        // It's weird and hard for reading to cut off a word to cross lines.
-        // So I'd like to move the whole word to next line which behaves the same as the text wrapping behavior in CSS.
-        // Note that there are text wrapping algorithms which is an over-kill feature for this application.
-        // The logic here is straightforward:
-        // 1. For Non-ASCII characters we just break line.
-        // 2. For ASCII word, we put it at the beginning of next line.
-        if char_counter >= self.step {
-            if let Ok(cur_line) = std::str::from_utf8(&self.buffer.clone()) {
-                let mut last_word = String::new();
-
-                if let Some((space_idx,_)) = cur_line.char_indices().rev().find(|(_,c)| c.is_ascii_whitespace()) {
-                    // println!("space index {:?} in {:?}", space_idx, cur_line);
-                    // For All ASCII text, if the whitespace is not the last character,
-                    // then this means we have borken up a word.
-                    if space_idx != cur_line.chars().count() - 1 {
-                        // Make sure it's all ASCII text,
-                        // which means byte index is the same as the character index
-                        if char::from_u32(*cur_line.as_bytes().get(space_idx).unwrap() as u32).unwrap().is_ascii_whitespace() {
-                        let (line, part_word) = cur_line.split_at(space_idx);
-                            last_word.push_str(part_word.trim_start());
-                            // println!("line:\n {:?}\npart_word:\n{:?}", line, part_word.trim_start());
-                            self.buffer = line.trim_end().as_bytes().to_vec();
-                        }
+            // Read a new line from the reader
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => { // EOF
+                    // If buffer still has content, return it as the last line
+                    if !self.buffer.is_empty() {
+                        let last_part = std::mem::take(&mut self.buffer);
+                        return Some(last_part);
+                    } else {
+                        return None; // No more lines and buffer is empty
                     }
                 }
+                Ok(_) => { // Successfully read a line
+                    // Prepend buffer content to the newly read line
+                    self.buffer.push_str(&line.trim_end_matches(|c| c == '\r' || c == '\n'));
 
-                self.last_word = Some(last_word);
+                    // If the combined buffer now exceeds max_width, process it
+                    if self.buffer.chars().count() > self.max_width {
+                        let (line_part, remaining_part) = split_line(&self.buffer, self.max_width);
+                        self.buffer = remaining_part;
+                        return Some(line_part);
+                    } else {
+                        // Line (with buffer content) fits, return it and clear buffer
+                        let full_line = std::mem::take(&mut self.buffer);
+                        return Some(full_line);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error reading line: {}", e);
+                    // Treat error as EOF, return any remaining buffer content
+                     if !self.buffer.is_empty() {
+                        let last_part = std::mem::take(&mut self.buffer);
+                        return Some(last_part);
+                    } else {
+                        return None;
+                    }
+                }
             }
         }
-
-        let line = String::from_utf8(self.buffer.clone()).unwrap();
-        self.buffer.clear();
-
-        Some(line)
     }
 }
 
-fn read_file_by_chars<R: Read>(file: R, step: usize) ->  Vec<String> {
-    let reader = BufReader::new(file);
-    let byte_iter = reader.bytes();
-    let width_iter= WidthIter::new(byte_iter, step);
-    let mut lines = vec![];
-    width_iter.for_each(|line| {
-        lines.push(line);
-    });
-    lines
+// Helper function to split a line at max_width, trying to wrap at whitespace.
+fn split_line(line: &str, max_width: usize) -> (String, String) {
+    if line.chars().count() <= max_width {
+        return (line.to_string(), String::new());
+    }
+
+    // Find the character index corresponding to max_width
+    let mut split_char_index = 0;
+    for (idx, _) in line.char_indices().skip(max_width) {
+        split_char_index = idx;
+        break;
+    }
+     // If max_width lands exactly at the end, handle potential edge case (though unlikely with > check)
+    if split_char_index == 0 && line.chars().count() > max_width {
+         split_char_index = line.char_indices().nth(max_width).map(|(i, _)| i).unwrap_or(line.len());
+    }
+
+
+    // Look backwards from the split point for whitespace (only for ASCII for simplicity)
+    let potential_split_point = &line[..split_char_index];
+    let wrap_index = potential_split_point
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| c.is_ascii_whitespace())
+        .map(|(i, _)| i);
+
+    if let Some(idx) = wrap_index {
+        // Found whitespace: split before it, trim whitespace from end of first part
+        // and start of second part.
+        let first_part = potential_split_point[..idx].trim_end().to_string();
+        let second_part = line[idx..].trim_start().to_string();
+        (first_part, second_part)
+    } else {
+        // No whitespace found before split point, or non-ASCII: hard break at max_width chars
+        let (first_part, second_part) = line.split_at(split_char_index);
+        (first_part.to_string(), second_part.to_string())
+    }
 }
 
 
 #[cfg(test)]
 mod test_utils{
   use super::*;
+  use std::io::Cursor;
+
   #[test]
-  #[should_panic(expected="should panic")]
-  fn test_open_file_by_lines() {
-        match open_file_by_lines("/tmp/file-does-not-exist") {
-            Ok(_) => (),
-            Err(_) => panic!("should panic"),
+  fn test_open_file_not_found() {
+        match open_file_by_lines("/tmp/file-does-not-exist-hopefully") {
+            Ok(_) => panic!("Should have failed"),
+            Err(e) => assert!(e.to_string().contains("doesn't exist or is not a regular file")),
+        }
+         match open_file_by_lines_width("/tmp/file-does-not-exist-hopefully", 80) {
+            Ok(_) => panic!("Should have failed"),
+            Err(e) => assert!(e.to_string().contains("doesn't exist or is not a regular file")),
         }
   }
 
   #[test]
-  fn test_width_iter_long_text() {
-        let reader = BufReader::new(&b"123123123"[..]);
+  fn test_read_lines_basic() {
+      let data = "line1\nline2\nline3";
+      let cursor = Cursor::new(data);
+      let reader = BufReader::new(cursor);
+      let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+      assert_eq!(lines, vec!["line1", "line2", "line3"]);
+  }
 
-        let byte_iter = reader.bytes();
-        let width_iter= WidthIter::new(byte_iter, 3);
-        width_iter.enumerate().for_each(|(idx,line)| {
-            println!("{:?} {:?}", idx, line);
-            assert_eq!("123", line);
-        });
+   #[test]
+    fn test_split_line_simple() {
+        let (l, r) = split_line("abcdefghijkl", 5);
+        assert_eq!(l, "abcde");
+        assert_eq!(r, "fghijkl");
+    }
+
+    #[test]
+    fn test_split_line_with_whitespace_wrap() {
+        let (l, r) = split_line("abcde fghijkl", 8);
+        assert_eq!(l, "abcde"); // Wraps before 'f' at the space
+        assert_eq!(r, "fghijkl");
+    }
+
+     #[test]
+    fn test_split_line_with_whitespace_at_end() {
+        let (l, r) = split_line("abcde ", 5); // Space is exactly at width limit
+        assert_eq!(l, "abcde"); // Space is trimmed
+        assert_eq!(r, "");
+    }
+
+    #[test]
+    fn test_split_line_no_whitespace() {
+        let (l, r) = split_line("abcdefghijkl", 5);
+        assert_eq!(l, "abcde"); // Hard break
+        assert_eq!(r, "fghijkl");
+    }
+
+     #[test]
+    fn test_split_line_non_ascii() {
+        let (l, r) = split_line("你好世界你好世界", 3); // Split after 3 chars
+        assert_eq!(l, "你好世");
+        assert_eq!(r, "界你好世界");
+    }
+
+
+  #[test]
+  fn test_width_iter_long_text_no_wrap() {
+        let data = "123123123";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 3);
+        let lines: Vec<String> = width_iter.collect();
+        assert_eq!(lines, vec!["123", "123", "123"]);
   }
 
   #[test]
-  fn test_width_iter_non_ascii() {
-        let reader = BufReader::new("当我发现我童年和少年时期的旧日记时，它们已经被尘埃所覆盖。".as_bytes());
-        let ans = vec!["当我发现我童年和少年时期的旧日记时，它们已经被尘埃所", "覆盖。"];
-        let byte_iter = reader.bytes();
-        let width_iter= WidthIter::new(byte_iter, 26);
-        width_iter.enumerate().for_each(|(idx,line)| {
-            println!("{:?} {:?}", idx, line);
-            assert_eq!(ans[idx], line);
-        });
+  fn test_width_iter_non_ascii_wrap() {
+        let data = "当我发现我童年和少年时期的旧日记时，它们已经被尘埃所覆盖。";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 26);
+        let lines: Vec<String> = width_iter.collect();
+        // Should hard break as no ASCII whitespace involved
+        assert_eq!(lines, vec!["当我发现我童年和少年时期的旧日记时，它们已经被尘埃所", "覆盖。"]);
   }
 
   #[test]
-  fn test_width_iter_text_wrapping() {
-        let reader = BufReader::new("When I found my old diaries from my childhood and teen years, they were covered in dust.".as_bytes());
-        let ans = vec!["When I found my old diaries from my childhood and teen years, they were", "covered in dust."];
-        let byte_iter = reader.bytes();
-        let width_iter= WidthIter::new(byte_iter, 76);
-        width_iter.enumerate().for_each(|(idx,line)| {
-            println!("{:?} {:?}", idx, line);
-            assert_eq!(ans[idx], line);
-        });
+  fn test_width_iter_text_wrapping_ascii() {
+        let data = "When I found my old diaries from my childhood and teen years, they were covered in dust.";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 76);
+        let lines: Vec<String> = width_iter.collect();
+        // Should wrap at "were"
+        assert_eq!(lines, vec!["When I found my old diaries from my childhood and teen years, they were", "covered in dust."]);
+  }
+
+   #[test]
+  fn test_width_iter_multiple_lines_wrapping() {
+        let data = "This is the first line which is quite long and needs wrapping.\nThis is the second line, also long.\nShort third.";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 20);
+        let lines: Vec<String> = width_iter.collect();
+        assert_eq!(lines, vec![
+            "This is the first",
+            "line which is quite",
+            "long and needs",
+            "wrapping.",
+            "This is the second",
+            "line, also long.",
+            "Short third."
+            ]);
+  }
+
+   #[test]
+  fn test_width_iter_empty_lines() {
+        let data = "Line 1\n\nLine 3";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 80);
+        let lines: Vec<String> = width_iter.collect();
+        assert_eq!(lines, vec!["Line 1", "", "Line 3"]);
+  }
+
+   #[test]
+  fn test_width_iter_exact_width() {
+        let data = "12345\n67890";
+        let cursor = Cursor::new(data);
+        let reader = BufReader::new(cursor);
+        let width_iter = WidthLineIterator::new(reader, 5);
+        let lines: Vec<String> = width_iter.collect();
+        assert_eq!(lines, vec!["12345", "67890"]);
   }
 }
-

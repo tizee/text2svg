@@ -16,9 +16,8 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow = "1.0.72"
 clap = { version = "4.3.19", features = ["derive"] }
-font-kit = "0.11.0"
-pathfinder_geometry = "0.5.1"
-resvg = "0.35.0"
-rustybuzz = "0.8.0"
-svg = "0.13.1"
+font-kit = "0.14.2"
+resvg = "0.45.0"
+rustybuzz = "0.20.1"
+svg = "0.18.0"
 syntect = "5.1.0"
