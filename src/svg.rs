@@ -111,7 +111,7 @@ impl TextBuilder {
         let scale_factor = target_glyph_height / origin_glyph_height.max(1.0); // Avoid division by zero
 
         if font_config.get_debug() {
-            println!(
+            eprintln!(
                 "Build Scale: origin_h={:?}, target_h={:?}, scale_factor={:?}, units/em={:?}",
                 origin_glyph_height, target_glyph_height, scale_factor, metrics.units_per_em
             );
@@ -174,7 +174,7 @@ impl TextBuilder {
                 e.insert(svg_id.clone());
 
                 if font_config.get_debug() {
-                    println!("Defined glyph: id={}, svg_id={}", glyph_id_u16, svg_id);
+                    eprintln!("Defined glyph: id={}, svg_id={}", glyph_id_u16, svg_id);
                 }
             }
 
@@ -190,7 +190,7 @@ impl TextBuilder {
             use_group = use_group.add(use_node);
 
             if font_config.get_debug() {
-                println!(
+                eprintln!(
                     "Used glyph: id={}, svg_id={}, use_x={}, use_y={}, x_adv={}",
                     glyph_id_u16, svg_id, use_x, use_y, glyph_pos.x_advance
                 );
@@ -237,7 +237,7 @@ impl TextBuilder {
         };
 
         if font_config.get_debug() {
-            println!(
+            eprintln!(
                 "TextBuilder BBox: x_min={:?} y_min={:?} x_max={:?} y_max={:?} width={:?} height={:?}",
                 bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max, bbox.width(), bbox.height()
             );

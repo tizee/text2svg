@@ -1,13 +1,14 @@
 [package]
 name = "text2svg"
 authors = ["tizee"]
-version = "0.3.0"
+version = "0.4.0"
 description = "A command line tool help convert text to svg file"
 readme = "README.md"
 homepage = "https://github.com/tizee/text2svg"
 repository = "https://github.com/tizee/text2svg"
 license = "MIT"
 edition = "2021"
+exclude = ["tests/"]
 keywords = ["cli","svg","tool"]
 categories = ["command-line-utilities"]
 
@@ -31,3 +32,4 @@ unicode-segmentation = "1.11"
 name = "text2svg"
 path = "src/main.rs"
 required-features = ["cli"]
+

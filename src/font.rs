@@ -199,8 +199,8 @@ impl FontConfig {
             let properties = font.properties();
 
             if debug {
-                println!("font name:\n {:?}", font.full_name());
-                println!("font properties:\n {:?}", properties);
+                eprintln!("font name:\n {:?}", font.full_name());
+                eprintln!("font properties:\n {:?}", properties);
             }
 
             if let Some(style) = font_full_name_to_weight(font.full_name()) {
@@ -229,7 +229,7 @@ impl FontConfig {
         let features = feature_map.values().cloned().collect();
 
         if debug {
-            println!("faces:\n {:?}", faces);
+            eprintln!("faces:\n {:?}", faces);
         }
 
         // now only supports horizontal writing mode default features
@@ -287,7 +287,7 @@ impl FontConfig {
                 // Remove feature when value is 0 (disable)
                 self.feature_map.remove(&tag);
                 if self.debug {
-                    println!("Disabled font feature: {}", tag);
+                    eprintln!("Disabled font feature: {}", tag);
                 }
             } else {
                 // Add/enable feature when value > 0
@@ -304,7 +304,7 @@ impl FontConfig {
                 );
                 self.feature_map.insert(tag.clone(), feature);
                 if self.debug {
-                    println!("Enabled font feature: {}={}", tag, value);
+                    eprintln!("Enabled font feature: {}={}", tag, value);
                 }
             }
         }
@@ -313,7 +313,7 @@ impl FontConfig {
         self.features = self.feature_map.values().cloned().collect();
 
         if self.debug {
-            println!(
+            eprintln!(
                 "Set font features: {:?}",
                 self.feature_map.keys().collect::<Vec<_>>()
             );

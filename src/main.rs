@@ -1,12 +1,68 @@
 use anyhow::Error;
 use clap::Parser;
+use std::io::{self, IsTerminal, Read as IoRead, Write as IoWrite};
 use std::path::PathBuf;
 use text2svg::font::{FontConfig, FontStyle};
 use text2svg::highlight::HighlightSetting;
 use text2svg::render::{self, RenderConfig, TextAlign};
 
+// Exit codes for distinct error categories
+const EXIT_USER_ERROR: i32 = 1;
+const EXIT_FONT_ERROR: i32 = 2;
+const EXIT_IO_ERROR: i32 = 3;
+
+#[derive(Debug)]
+enum CliError {
+    User(Error),
+    Font(Error),
+    Io(Error),
+}
+
+impl CliError {
+    fn exit_code(&self) -> i32 {
+        match self {
+            CliError::User(_) => EXIT_USER_ERROR,
+            CliError::Font(_) => EXIT_FONT_ERROR,
+            CliError::Io(_) => EXIT_IO_ERROR,
+        }
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CliError::User(e) | CliError::Font(e) | CliError::Io(e) => write!(f, "{}", e),
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
-#[command(about,version,long_about=None)]
+#[command(
+    about,
+    version,
+    long_about = None,
+    after_help = "\
+Examples:
+  # Render text to SVG file
+  text2svg \"Hello World\" --font Arial --output hello.svg
+
+  # Render text to stdout (for piping)
+  text2svg \"Hello\" --font Arial --output -
+
+  # Render a file with syntax highlighting
+  text2svg --file main.rs --font \"Fira Code\" --highlight --theme base16-ocean.dark -o code.svg
+
+  # Pipe text from stdin
+  echo \"Hello\" | text2svg --font Arial --output greeting.svg
+
+  # Wrap text at pixel width with center alignment
+  text2svg \"Long text here\" --font Arial --pixel-width 400 --align center -o wrapped.svg
+
+  # List available resources
+  text2svg --list-fonts
+  text2svg --list-theme
+  text2svg --list-syntax"
+)]
 struct Args {
     /// input text string
     #[arg(conflicts_with = "file")]
@@ -20,13 +76,13 @@ struct Args {
     #[arg(long, conflicts_with_all = ["highlight", "width"])]
     pixel_width: Option<f32>,
 
-    /// input file
+    /// input file (use "-" for stdin)
     #[arg(long, short, conflicts_with = "text")]
-    file: Option<PathBuf>,
+    file: Option<String>,
 
-    /// output svg file path
+    /// output svg file path (use "-" for stdout)
     #[arg(short, long, default_value = "output.svg")]
-    output: Option<PathBuf>,
+    output: String,
 
     /// font family name (e.g., "Arial", "Times New Roman")
     #[arg(long)]
@@ -98,27 +154,25 @@ struct Args {
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
-        // Consider adding more context, e.g., e.chain()
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 
-fn run() -> Result<(), Error> {
+fn run() -> Result<(), CliError> {
     let args = Args::parse();
 
     if args.debug {
-        println!("Debug Mode Enabled");
-        println!("Args: {:?}", args);
+        eprintln!("Debug Mode Enabled");
+        eprintln!("Args: {:?}", args);
     }
 
     if args.list_fonts {
-        println!("Installed Font Families:");
         let fonts = text2svg::font::fonts();
         if fonts.is_empty() {
-            println!("  (No fonts found or error listing fonts)");
+            eprintln!("No fonts found or error listing fonts");
         } else {
             for name in fonts.iter() {
-                println!("- {}", name);
+                println!("{}", name);
             }
         }
         return Ok(());
@@ -131,96 +185,101 @@ fn run() -> Result<(), Error> {
     if let Some(theme_path_or_name) = &args.theme {
         let path = PathBuf::from(theme_path_or_name);
         if path.exists() && path.is_file() {
-            // Attempt to load theme from path using the correct method name
             match highlight_setting.add_theme_from_path("custom-theme", &path) {
                 Ok(_) => {
                     highlight_setting.set_theme("custom-theme");
                     if args.debug {
-                        println!("Loaded custom theme from: {}", path.display());
+                        eprintln!("Loaded custom theme from: {}", path.display());
                     }
                 }
                 Err(e) => {
-                    // Use eprintln for warnings/errors
-                    eprintln!(
-                        "Warning: Failed to load theme from path '{}': {}. Using default.",
+                    return Err(CliError::User(anyhow::anyhow!(
+                        "Failed to load theme from path '{}': {}\n  Hint: use --list-theme to see available built-in themes",
                         path.display(),
                         e
-                    );
-                    // Optionally reset to default theme name if loading failed?
-                    // highlight_setting.set_theme("base16-ocean.dark"); // Example reset
+                    )));
                 }
             }
         } else {
             // Assume it's a built-in theme name
             if highlight_setting.get_theme(theme_path_or_name).is_none() {
-                eprintln!(
-                    "Warning: Theme '{}' not found. Available themes:",
+                return Err(CliError::User(anyhow::anyhow!(
+                    "Theme '{}' not found\n  Hint: use --list-theme to see available themes",
                     theme_path_or_name
-                );
-                list_themes(&highlight_setting);
-                eprintln!("Using default theme: {}", highlight_setting.theme);
+                )));
             } else {
                 highlight_setting.set_theme(theme_path_or_name);
                 if args.debug {
-                    println!("Using built-in theme: {}", theme_path_or_name);
+                    eprintln!("Using built-in theme: {}", theme_path_or_name);
                 }
             }
         }
     }
 
     if args.list_syntax {
-        println!("Supported Syntaxes (Name, Extensions):");
         for syntax in highlight_setting.syntax_set.syntaxes() {
-            println!(
-                "- {} (.{})",
-                syntax.name,
-                syntax.file_extensions.join(", .")
-            );
+            println!("{}\t.{}", syntax.name, syntax.file_extensions.join("\t."));
         }
-        return Ok(()); // Exit after listing
+        return Ok(());
     }
 
     if args.list_theme {
         list_themes(&highlight_setting);
-        return Ok(()); // Exit after listing
+        return Ok(());
     }
 
+    // --- Determine input text ---
+    // Try: positional text arg > --file > piped stdin
+    let (input_text, input_file) = resolve_input(&args)?;
+
     // --- Font and Render Config ---
-    // Require font for actual rendering
     let font_name = match args.font {
         Some(f) => f,
         None => {
-            // Don't exit if only listing things, but require for rendering
-            if args.text.is_none() && args.file.is_none() {
-                return Ok(()); // Nothing to render, maybe just listed things
+            if input_text.is_none() && input_file.is_none() {
+                return Ok(());
             }
-            return Err(anyhow::anyhow!("--font option is required for rendering"));
+            return Err(CliError::User(anyhow::anyhow!(
+                "--font is required for rendering\n  Hint: use --list-fonts to see available font families"
+            )));
         }
     };
 
-    let output_path = args.output.unwrap_or_else(|| PathBuf::from("output.svg"));
+    let output_to_stdout = args.output == "-";
+    let output_path = if output_to_stdout {
+        // Use a temporary path; we'll intercept before save
+        PathBuf::from("/dev/null")
+    } else {
+        PathBuf::from(&args.output)
+    };
 
     // Create FontConfig
     let mut font_config = FontConfig::new(
         font_name,
         args.size,
-        args.fill.clone(), // Clone needed as args might be used later
+        args.fill.clone(),
         args.color.clone(),
         args.debug,
-    )?;
+    )
+    .map_err(|e| {
+        CliError::Font(anyhow::anyhow!(
+            "{}\n  Hint: use --list-fonts to see available font families",
+            e
+        ))
+    })?;
     font_config.set_letter_space(args.space);
 
     // Apply font features if specified
     if let Some(features_str) = &args.features {
         if let Err(err) = font_config.set_features_from_string(features_str) {
-            return Err(anyhow::anyhow!(
+            return Err(CliError::User(anyhow::anyhow!(
                 "Failed to parse font features '{}': {}",
                 features_str,
                 err
-            ));
+            )));
         }
         if args.debug {
-            println!(
+            eprintln!(
                 "Applied font features: {}",
                 font_config.get_features_summary()
             );
@@ -228,8 +287,8 @@ fn run() -> Result<(), Error> {
     }
 
     if args.debug {
-        println!("Font Config: {:?}", font_config);
-        println!(
+        eprintln!("Font Config: {:?}", font_config);
+        eprintln!(
             "Active font features: {}",
             font_config.get_features_summary()
         );
@@ -243,53 +302,112 @@ fn run() -> Result<(), Error> {
     render_config.set_align(args.align.unwrap_or(TextAlign::Left));
 
     // --- Rendering Logic ---
-    if let Some(text) = args.text {
+    if let Some(text) = input_text {
         if args.highlight {
-            eprintln!(
-                "Warning: Highlight mode is ignored when providing text directly via argument."
-            );
+            eprintln!("Warning: Highlight mode is ignored when providing text directly.");
         }
-        println!("Rendering text to {}...", output_path.display());
-        render::render_text_to_svg_file(&text, &mut font_config, &render_config, output_path);
-    } else if let Some(file) = args.file {
-        if !file.exists() {
-            return Err(anyhow::anyhow!("Input file not found: {}", file.display()));
-        }
+        let doc = render::render_text_to_svg(&text, &mut font_config, &render_config);
+        write_svg_output(doc, output_to_stdout, &output_path)?;
+    } else if let Some(file) = input_file {
         if args.highlight {
-            println!(
-                "Rendering file {} with highlighting to {}...",
-                file.display(),
-                output_path.display()
-            );
-            render::render_file_highlight(
-                &file,
-                &mut font_config,
-                &highlight_setting, // Pass the configured settings
-                output_path,
-            );
+            let doc =
+                render::render_file_highlight_to_doc(&file, &mut font_config, &highlight_setting);
+            write_svg_output(doc, output_to_stdout, &output_path)?;
         } else {
-            println!(
-                "Rendering file {} as plain text to {}...",
-                file.display(),
-                output_path.display()
-            );
-            render::render_text_file_to_svg(&file, &mut font_config, &render_config, output_path);
+            let doc = render::render_text_file_to_svg_doc(&file, &mut font_config, &render_config);
+            write_svg_output(doc, output_to_stdout, &output_path)?;
         }
-    } else {
-        // This case should ideally be caught earlier if font wasn't provided,
-        // but added for completeness if only flags like --list-fonts were used.
-        if !args.list_fonts && !args.list_syntax && !args.list_theme {
-            println!("No input text or file provided. Use --text or --file.");
-            // Potentially print help here
-        }
+    } else if !args.list_fonts && !args.list_syntax && !args.list_theme {
+        return Err(CliError::User(anyhow::anyhow!(
+            "No input provided. Pass text as argument, use --file <path>, or pipe via stdin"
+        )));
     }
 
     Ok(())
 }
 
+/// Resolve input source: positional text, --file, or piped stdin.
+fn resolve_input(args: &Args) -> Result<(Option<String>, Option<PathBuf>), CliError> {
+    if let Some(ref text) = args.text {
+        return Ok((Some(text.clone()), None));
+    }
+
+    if let Some(ref file_arg) = args.file {
+        if file_arg == "-" {
+            // Read from stdin
+            let text = read_stdin()?;
+            return Ok((Some(text), None));
+        }
+        let path = PathBuf::from(file_arg);
+        if !path.exists() {
+            return Err(CliError::Io(anyhow::anyhow!(
+                "Input file not found: {}",
+                path.display()
+            )));
+        }
+        return Ok((None, Some(path)));
+    }
+
+    // Auto-detect piped stdin when no text and no file
+    if !io::stdin().is_terminal() {
+        let text = read_stdin()?;
+        if !text.is_empty() {
+            return Ok((Some(text), None));
+        }
+    }
+
+    Ok((None, None))
+}
+
+fn read_stdin() -> Result<String, CliError> {
+    let mut buf = String::new();
+    io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| CliError::Io(anyhow::anyhow!("Failed to read from stdin: {}", e)))?;
+    // Trim trailing newline that shells typically add
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
+}
+
+/// Write SVG document to stdout or file.
+fn write_svg_output(
+    doc: Option<svg::Document>,
+    to_stdout: bool,
+    output_path: &PathBuf,
+) -> Result<(), CliError> {
+    let doc = match doc {
+        Some(d) => d,
+        None => {
+            return Err(CliError::Io(anyhow::anyhow!("Failed to render SVG")));
+        }
+    };
+
+    if to_stdout {
+        let mut stdout = io::stdout().lock();
+        svg::write(&mut stdout, &doc)
+            .map_err(|e| CliError::Io(anyhow::anyhow!("Failed to write SVG to stdout: {}", e)))?;
+        stdout
+            .write_all(b"\n")
+            .map_err(|e| CliError::Io(anyhow::anyhow!("Failed to write to stdout: {}", e)))?;
+    } else {
+        svg::save(output_path, &doc).map_err(|e| {
+            CliError::Io(anyhow::anyhow!(
+                "Failed to save SVG to {}: {}",
+                output_path.display(),
+                e
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 fn list_themes(settings: &HighlightSetting) {
-    println!("Available Themes:");
     for theme_name in settings.theme_set.themes.keys() {
-        println!("- {}", theme_name);
+        println!("{}", theme_name);
     }
 }
