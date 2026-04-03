@@ -5,7 +5,7 @@ use font_kit::error::{FontLoadingError, SelectionError};
 use font_kit::font::Font;
 use font_kit::properties::{Style, Weight};
 use font_kit::source::SystemSource;
-use rustybuzz::{Feature, ttf_parser::Tag};
+use rustybuzz::{ttf_parser::Tag, Feature};
 
 /// names of installed fonts
 pub fn fonts() -> Vec<String> {
@@ -116,7 +116,7 @@ impl From<FontLoadingError> for FontError {
 pub struct FontConfig {
     font_name: String,
     size: u32,
-    feature_map: HashMap<String,Feature>,
+    feature_map: HashMap<String, Feature>,
     features: Vec<Feature>,
     faces: HashMap<FontStyle, Font>,
     letter_space: f32,
@@ -212,20 +212,20 @@ impl FontConfig {
                 Style::Normal => {
                     let weight = approximate_font_weight(properties.weight);
                     faces.insert(weight, font);
-                },
+                }
                 Style::Italic => {
                     faces.insert(FontStyle::Italic, font);
                 }
                 _ => {
                     eprintln!("Unsupported font style\n {:?}", properties);
-                },
+                }
             }
         }
         let mut feature_map = HashMap::new();
-        feature_map.insert("kern".to_owned(),Feature::from_str("kern").unwrap());
-        feature_map.insert("liga".to_owned(),Feature::from_str("liga").unwrap());
-        feature_map.insert("calt".to_owned(),Feature::from_str("calt").unwrap());
-        feature_map.insert("clig".to_owned(),Feature::from_str("clig").unwrap());
+        feature_map.insert("kern".to_owned(), Feature::from_str("kern").unwrap());
+        feature_map.insert("liga".to_owned(), Feature::from_str("liga").unwrap());
+        feature_map.insert("calt".to_owned(), Feature::from_str("calt").unwrap());
+        feature_map.insert("clig".to_owned(), Feature::from_str("clig").unwrap());
         let features = feature_map.values().cloned().collect();
 
         if debug {
@@ -241,17 +241,16 @@ impl FontConfig {
             fill_color,
             color,
             faces,
-            letter_space:0.0,
+            letter_space: 0.0,
             debug,
         })
     }
-
 
     /// Parse and set font features from a string like "cv01=1,calt=0,liga=1"
     /// This will override existing features for the same tags, but keeps defaults for unspecified features
     pub fn set_features_from_string(&mut self, features_str: &str) -> Result<(), String> {
         // Don't clear existing features - we want to override/add to defaults
-        
+
         // Parse the features string
         for feature_str in features_str.split(',') {
             let feature_str = feature_str.trim();
@@ -263,8 +262,12 @@ impl FontConfig {
             let (tag, value) = if let Some(eq_pos) = feature_str.find('=') {
                 let tag = &feature_str[..eq_pos].trim();
                 let value_str = &feature_str[eq_pos + 1..].trim();
-                let value = value_str.parse::<u32>()
-                    .map_err(|_| format!("Invalid feature value '{}' for feature '{}'", value_str, tag))?;
+                let value = value_str.parse::<u32>().map_err(|_| {
+                    format!(
+                        "Invalid feature value '{}' for feature '{}'",
+                        value_str, tag
+                    )
+                })?;
                 (tag.to_string(), value)
             } else {
                 // Default value is 1 if not specified
@@ -273,7 +276,10 @@ impl FontConfig {
 
             // Validate tag length (OpenType feature tags are exactly 4 characters)
             if tag.len() != 4 {
-                return Err(format!("Invalid feature tag '{}': feature tags must be exactly 4 characters", tag));
+                return Err(format!(
+                    "Invalid feature tag '{}': feature tags must be exactly 4 characters",
+                    tag
+                ));
             }
 
             // Handle feature enable/disable
@@ -290,11 +296,11 @@ impl FontConfig {
                 let tag_str_bytes = tag.as_bytes();
                 let len = tag_str_bytes.len().min(4);
                 tag_bytes[..len].copy_from_slice(&tag_str_bytes[..len]);
-                
+
                 let feature = Feature::new(
                     Tag::from_bytes(&tag_bytes),
                     value,
-                    .. // Apply to entire text range
+                    .., // Apply to entire text range
                 );
                 self.feature_map.insert(tag.clone(), feature);
                 if self.debug {
@@ -305,9 +311,12 @@ impl FontConfig {
 
         // Update the features vector
         self.features = self.feature_map.values().cloned().collect();
-        
+
         if self.debug {
-            println!("Set font features: {:?}", self.feature_map.keys().collect::<Vec<_>>());
+            println!(
+                "Set font features: {:?}",
+                self.feature_map.keys().collect::<Vec<_>>()
+            );
         }
 
         Ok(())
@@ -329,7 +338,6 @@ impl FontConfig {
     pub fn get_features(&self) -> &Vec<Feature> {
         &self.features
     }
-
 
     pub fn get_font_by_style(&self, style: &FontStyle) -> Option<&Font> {
         self.faces.get(style)
@@ -377,12 +385,13 @@ mod test_font_features {
             16,
             "#000".to_string(),
             "#000".to_string(),
-            false // debug off for cleaner tests
-        ).unwrap_or_else(|_| {
+            false, // debug off for cleaner tests
+        )
+        .unwrap_or_else(|_| {
             // Create a mock config by directly constructing the struct for testing
             // This is a bit of a hack but allows us to test the feature parsing logic
             use std::collections::HashMap;
-            
+
             let mut feature_map = HashMap::new();
             // Add default features like in the actual constructor
             feature_map.insert("kern".to_owned(), Feature::from_str("kern").unwrap());
@@ -408,7 +417,7 @@ mod test_font_features {
     #[test]
     fn test_font_features_default() {
         let font_config = create_test_font_config();
-        
+
         // Should have default features enabled
         let summary = font_config.get_features_summary();
         assert!(summary.contains("kern="));
@@ -420,11 +429,11 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_enable() {
         let mut font_config = create_test_font_config();
-        
+
         // Test enabling a new feature
         let result = font_config.set_features_from_string("cv01=1");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         assert!(summary.contains("cv01=1"));
     }
@@ -432,11 +441,11 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_disable() {
         let mut font_config = create_test_font_config();
-        
+
         // Test disabling an existing feature
         let result = font_config.set_features_from_string("liga=0");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         // liga should be removed when set to 0
         assert!(!summary.contains("liga="));
@@ -445,11 +454,11 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_multiple() {
         let mut font_config = create_test_font_config();
-        
+
         // Test setting multiple features
         let result = font_config.set_features_from_string("cv01=1,calt=0,smcp=1");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         assert!(summary.contains("cv01=1"));
         assert!(!summary.contains("calt=")); // Should be disabled
@@ -459,11 +468,11 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_default_value() {
         let mut font_config = create_test_font_config();
-        
+
         // Test feature without explicit value (should default to 1)
         let result = font_config.set_features_from_string("swsh");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         assert!(summary.contains("swsh=1"));
     }
@@ -471,12 +480,12 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_invalid_tag_length() {
         let mut font_config = create_test_font_config();
-        
+
         // Test invalid tag length
         let result = font_config.set_features_from_string("cv=1"); // Too short
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exactly 4 characters"));
-        
+
         let result = font_config.set_features_from_string("cv01xx=1"); // Too long
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exactly 4 characters"));
@@ -485,7 +494,7 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_invalid_value() {
         let mut font_config = create_test_font_config();
-        
+
         // Test invalid value
         let result = font_config.set_features_from_string("cv01=abc");
         assert!(result.is_err());
@@ -495,11 +504,11 @@ mod test_font_features {
     #[test]
     fn test_set_features_from_string_empty_and_whitespace() {
         let mut font_config = create_test_font_config();
-        
+
         // Test empty string and whitespace handling
         let result = font_config.set_features_from_string("  cv01=1  ,  , liga=0  ");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         assert!(summary.contains("cv01=1"));
         assert!(!summary.contains("liga=")); // Should be disabled
@@ -508,10 +517,10 @@ mod test_font_features {
     #[test]
     fn test_get_features_summary_empty() {
         let mut font_config = create_test_font_config();
-        
+
         // Disable all features
         let _result = font_config.set_features_from_string("kern=0,liga=0,calt=0,clig=0");
-        
+
         let summary = font_config.get_features_summary();
         assert_eq!(summary, "none");
     }
@@ -519,14 +528,14 @@ mod test_font_features {
     #[test]
     fn test_features_override_defaults() {
         let mut font_config = create_test_font_config();
-        
+
         // Verify default features exist
         assert!(font_config.feature_map.contains_key("liga"));
-        
+
         // Override with custom value
         let result = font_config.set_features_from_string("liga=2");
         assert!(result.is_ok());
-        
+
         let summary = font_config.get_features_summary();
         assert!(summary.contains("liga=2"));
     }

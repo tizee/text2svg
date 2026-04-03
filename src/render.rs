@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use resvg::tiny_skia::Point;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
-use svg::node::element::{Rectangle, Definitions};
+use svg::node::element::{Definitions, Rectangle};
 
 use syntect::easy::HighlightFile;
 
@@ -12,10 +12,10 @@ use rustybuzz::GlyphBuffer;
 
 use crate::font::{FontConfig, FontStyle};
 use crate::highlight::{HighlightColor, HighlightFontStyle, HighlightSetting};
-use crate::svg::{TextBuilder, GlyphCache, GlyphDefs};
+use crate::svg::{GlyphCache, GlyphDefs, TextBuilder};
 use crate::utils::open_file_by_lines;
-use crate::utils::open_file_by_lines_width;
 use crate::utils::open_file_by_lines_pixel_width;
+use crate::utils::open_file_by_lines_width;
 use crate::utils::wrap_text_by_pixel_width;
 
 use svg::node::element::{Group, Style};
@@ -23,19 +23,14 @@ use svg::Document;
 use syntect::highlighting::Style as TokenStyle;
 
 /// Text alignment for multi-line rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "cli", value(rename_all = "lower"))]
 pub enum TextAlign {
+    #[default]
     Left,
     Center,
     Right,
-}
-
-impl Default for TextAlign {
-    fn default() -> Self {
-        TextAlign::Left
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -118,7 +113,6 @@ impl RenderConfig {
     }
 }
 
-
 pub fn render_file_highlight(
     file: &PathBuf,
     font_config: &mut FontConfig,
@@ -145,7 +139,8 @@ pub fn render_file_highlight(
 
         for l in highlighter.reader.lines() {
             let line = l.unwrap();
-            let mut line_group = Group::new().set("transform", format!("translate(0, {})", current_height));
+            let mut line_group =
+                Group::new().set("transform", format!("translate(0, {})", current_height));
             let mut current_x: f32 = 0.0;
             let mut line_max_x: f32 = 0.0;
 
@@ -159,9 +154,15 @@ pub fn render_file_highlight(
                     let style = region.0;
                     let token = region.1;
                     // Pass glyph_defs as mutable reference
-                    if let Some((token_group, token_bbox)) =
-                        render_token(current_x, 0.0, token, font_config, style, &mut glyph_cache, &mut glyph_defs)
-                    {
+                    if let Some((token_group, token_bbox)) = render_token(
+                        current_x,
+                        0.0,
+                        token,
+                        font_config,
+                        style,
+                        &mut glyph_cache,
+                        &mut glyph_defs,
+                    ) {
                         // Apply token style (color) to the group containing <use> elements
                         let foreground_color = HighlightColor::new(style.foreground).to_string();
                         let styled_token_group = token_group
@@ -229,7 +230,13 @@ pub fn render_token(
         // Colors are applied later to the group
 
         // Pass glyph_defs as mutable reference
-        return Some(svg_builder.build(font_config, &font_style, &glyph_buffer, glyph_cache, glyph_defs));
+        return Some(svg_builder.build(
+            font_config,
+            &font_style,
+            &glyph_buffer,
+            glyph_cache,
+            glyph_defs,
+        ));
     }
     None
 }
@@ -266,7 +273,8 @@ pub fn render_text_line(
 }
 
 fn get_animation_style() -> Style {
-    Style::new("
+    Style::new(
+        "
   @keyframes draw {
     to {
       stroke-dashoffset: 0;
@@ -278,10 +286,16 @@ fn get_animation_style() -> Style {
     stroke-dasharray: 1000 1000;
     stroke-dashoffset: 1000;
     animation: draw 1.5s ease forwards;
-  }")
+  }",
+    )
 }
 
-pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, render_config: &RenderConfig, output: PathBuf) {
+pub fn render_text_file_to_svg(
+    file: &PathBuf,
+    font_config: &mut FontConfig,
+    render_config: &RenderConfig,
+    output: PathBuf,
+) {
     let mut max_width: u32 = 0;
     let mut current_height: u32 = 0;
     let line_height = font_config.get_size(); // Use font size as line height
@@ -289,17 +303,21 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new(); // Uses Box<dyn Node>
-    // Group for all text content
+                                                    // Group for all text content
     let mut main_group = Group::new();
     // Apply global fill/stroke to the main group
     main_group = main_group
         .set("fill", font_config.get_fill_color().as_str())
         .set("stroke", font_config.get_color().as_str());
-        // Note: stroke-width might need to be set here or in TextBuilder if needed
-
+    // Note: stroke-width might need to be set here or in TextBuilder if needed
 
     let file_lines = if let Some(pixel_width) = render_config.max_pixel_width {
-        open_file_by_lines_pixel_width(file, pixel_width, font_config, render_config.get_font_style())
+        open_file_by_lines_pixel_width(
+            file,
+            pixel_width,
+            font_config,
+            render_config.get_font_style(),
+        )
     } else if let Some(char_width) = render_config.max_width {
         open_file_by_lines_width(file, char_width)
     } else {
@@ -317,9 +335,15 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
         for line in lines.iter() {
             if line.is_empty() {
                 rendered_lines.push((Group::new(), 0));
-            } else if let Some((line_content_group, line_bbox)) =
-                render_text_line(0.0, 0.0, line, font_config, render_config, &mut glyph_cache, &mut glyph_defs)
-            {
+            } else if let Some((line_content_group, line_bbox)) = render_text_line(
+                0.0,
+                0.0,
+                line,
+                font_config,
+                render_config,
+                &mut glyph_cache,
+                &mut glyph_defs,
+            ) {
                 let line_w = line_bbox.width() as u32;
                 max_width = max_width.max(line_w);
                 rendered_lines.push((line_content_group, line_w));
@@ -374,7 +398,12 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
 }
 
 // Helper function to render multiple text lines to SVG
-fn render_text_lines_to_svg(lines: Vec<String>, font_config: &mut FontConfig, render_config: &RenderConfig, output: PathBuf) {
+fn render_text_lines_to_svg(
+    lines: Vec<String>,
+    font_config: &mut FontConfig,
+    render_config: &RenderConfig,
+    output: PathBuf,
+) {
     let mut max_width: u32 = 0;
     let mut current_height: u32 = 0;
     let line_height = font_config.get_size(); // Use font size as line height
@@ -382,7 +411,7 @@ fn render_text_lines_to_svg(lines: Vec<String>, font_config: &mut FontConfig, re
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new(); // Uses Box<dyn Node>
-    // Group for all text content
+                                                    // Group for all text content
     let mut main_group = Group::new();
     // Apply global fill/stroke to the main group
     main_group = main_group
@@ -395,9 +424,15 @@ fn render_text_lines_to_svg(lines: Vec<String>, font_config: &mut FontConfig, re
     for line in lines.iter() {
         if line.is_empty() {
             rendered_lines.push((Group::new(), 0));
-        } else if let Some((line_content_group, line_bbox)) =
-            render_text_line(0.0, 0.0, line, font_config, render_config, &mut glyph_cache, &mut glyph_defs)
-        {
+        } else if let Some((line_content_group, line_bbox)) = render_text_line(
+            0.0,
+            0.0,
+            line,
+            font_config,
+            render_config,
+            &mut glyph_cache,
+            &mut glyph_defs,
+        ) {
             let line_w = line_bbox.width() as u32;
             max_width = max_width.max(line_w);
             rendered_lines.push((line_content_group, line_w));
@@ -450,14 +485,24 @@ fn render_text_lines_to_svg(lines: Vec<String>, font_config: &mut FontConfig, re
     svg::save(output, &doc).unwrap();
 }
 
-pub fn render_text_to_svg_file(text: &str, font_config: &mut FontConfig,render_config: &RenderConfig, output: PathBuf) {
+pub fn render_text_to_svg_file(
+    text: &str,
+    font_config: &mut FontConfig,
+    render_config: &RenderConfig,
+    output: PathBuf,
+) {
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new(); // Uses Box<dyn Node>
 
     // Handle text wrapping if pixel width is specified
     let text_lines = if let Some(pixel_width) = render_config.max_pixel_width {
-        wrap_text_by_pixel_width(text, pixel_width, font_config, render_config.get_font_style())
+        wrap_text_by_pixel_width(
+            text,
+            pixel_width,
+            font_config,
+            render_config.get_font_style(),
+        )
     } else {
         vec![text.to_string()]
     };
@@ -470,17 +515,29 @@ pub fn render_text_to_svg_file(text: &str, font_config: &mut FontConfig,render_c
 
     // Single line rendering (original logic)
     let text_to_render = &text_lines[0];
-    
+
     // Shape the text
     // Pass glyph_defs as mutable reference
-    if let Some((text_content_group, text_bbox)) =
-        render_text_line(0.0, 0.0, text_to_render, font_config, render_config, &mut glyph_cache, &mut glyph_defs)
-    {
+    if let Some((text_content_group, text_bbox)) = render_text_line(
+        0.0,
+        0.0,
+        text_to_render,
+        font_config,
+        render_config,
+        &mut glyph_cache,
+        &mut glyph_defs,
+    ) {
         // Cast i16 height/width to u32
         let height = text_bbox.height() as u32;
         let width = text_bbox.width() as u32;
         // Use i16 for viewbox coordinates
-        let view_box = format!("{} {} {} {}", text_bbox.x_min, text_bbox.y_min, text_bbox.width(), text_bbox.height());
+        let view_box = format!(
+            "{} {} {} {}",
+            text_bbox.x_min,
+            text_bbox.y_min,
+            text_bbox.width(),
+            text_bbox.height()
+        );
 
         // Apply global fill/stroke and animation class
         let mut styled_group = text_content_group
@@ -510,24 +567,35 @@ pub fn render_text_to_svg_file(text: &str, font_config: &mut FontConfig,render_c
 
         svg::save(output, &doc).unwrap();
     } else {
-         eprintln!("Failed to render text to SVG.");
+        eprintln!("Failed to render text to SVG.");
     }
 }
 
 /// Shape text with font default size (units_per_em)
 /// Therefore we need to scale these glyphs later according to the size
-fn text_shape(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) -> Option<GlyphBuffer> {
+fn text_shape(
+    text: &str,
+    font_config: &mut FontConfig,
+    font_style: &FontStyle,
+) -> Option<GlyphBuffer> {
     // Attempt to get the specific style, fall back to regular if not found
-    let ft_face = font_config.get_font_by_style(font_style)
+    let ft_face = font_config
+        .get_font_by_style(font_style)
         .or_else(|| {
             if font_config.get_debug() && *font_style != FontStyle::Regular {
-                 eprintln!("Warning: Font style {:?} not found, falling back to Regular.", font_style);
+                eprintln!(
+                    "Warning: Font style {:?} not found, falling back to Regular.",
+                    font_style
+                );
             }
             font_config.get_font_by_style(&FontStyle::Regular)
         })
         .or_else(|| {
-             eprintln!("Error: Regular font style not found either for font '{}'.", font_config.get_font_name());
-             None
+            eprintln!(
+                "Error: Regular font style not found either for font '{}'.",
+                font_config.get_font_name()
+            );
+            None
         });
 
     if let Some(ft_face) = ft_face {
@@ -540,19 +608,29 @@ fn text_shape(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) 
 
                 if font_config.get_debug() {
                     let format_flags = rustybuzz::SerializeFlags::default();
-                    println!("rustybuzz shape output:\n {:?}", glyph_buffer.serialize(&hb_face, format_flags));
+                    println!(
+                        "rustybuzz shape output:\n {:?}",
+                        glyph_buffer.serialize(&hb_face, format_flags)
+                    );
                 }
 
                 return Some(glyph_buffer);
             } else {
-                eprintln!("Failed to create rustybuzz::Face from font data for font '{}', style {:?}.", font_config.get_font_name(), font_style);
+                eprintln!(
+                    "Failed to create rustybuzz::Face from font data for font '{}', style {:?}.",
+                    font_config.get_font_name(),
+                    font_style
+                );
             }
         } else {
-            eprintln!("Failed to copy font data for font '{}', style {:?}.", font_config.get_font_name(), font_style);
+            eprintln!(
+                "Failed to copy font data for font '{}', style {:?}.",
+                font_config.get_font_name(),
+                font_style
+            );
         }
     }
     // Error messages handled within the if/else blocks
 
     None
 }
-

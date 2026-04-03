@@ -79,7 +79,8 @@ pub fn is_cjk(ch: char) -> bool {
 /// Characters that must not appear at the start of a line (line-start prohibition).
 /// Japanese: 行頭禁則文字
 fn is_kinsoku_start(ch: char) -> bool {
-    matches!(ch,
+    matches!(
+        ch,
         // Fullwidth punctuation
         '\u{FF0C}' | // ，
         '\u{FF0E}' | // ．
@@ -109,14 +110,15 @@ fn is_kinsoku_start(ch: char) -> bool {
         '\u{309D}' | // ゝ
         '\u{309E}' | // ゞ
         '\u{30FD}' | // ヽ
-        '\u{30FE}'   // ヾ
+        '\u{30FE}' // ヾ
     )
 }
 
 /// Characters that must not appear at the end of a line (line-end prohibition).
 /// Japanese: 行末禁則文字
 fn is_kinsoku_end(ch: char) -> bool {
-    matches!(ch,
+    matches!(
+        ch,
         '"' | '(' | '[' | '{' |
         '\u{201C}' | // "
         '\u{2018}' | // '
@@ -132,20 +134,21 @@ fn is_kinsoku_end(ch: char) -> bool {
         '\u{3010}' | // 【
         '\u{3016}' | // 〖
         '\u{3018}' | // 〘
-        '\u{301A}'   // 〚
+        '\u{301A}' // 〚
     )
 }
 
 /// Punctuation that sticks to the left (preceding) word -- must not start a line.
 fn is_left_sticky_punctuation(ch: char) -> bool {
-    matches!(ch,
+    matches!(
+        ch,
         '.' | ',' | '!' | '?' | ':' | ';' |
         ')' | ']' | '}' | '%' |
         '\u{2026}' | // …
         '\u{201D}' | // "
         '\u{2019}' | // '
         '\u{00BB}' | // »
-        '\u{203A}'   // ›
+        '\u{203A}' // ›
     )
 }
 
@@ -407,8 +410,8 @@ fn merge_left_sticky(segments: Vec<Segment>) -> Vec<Segment> {
         }
 
         // Check if this segment is purely left-sticky punctuation
-        let is_pure_sticky = !segment.text.is_empty()
-            && segment.text.chars().all(|ch| is_left_sticky_punctuation(ch));
+        let is_pure_sticky =
+            !segment.text.is_empty() && segment.text.chars().all(is_left_sticky_punctuation);
 
         if is_pure_sticky {
             // Merge with preceding text segment
@@ -448,7 +451,6 @@ fn set_break_flags(segments: &mut [Segment]) {
         };
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -576,7 +578,9 @@ mod tests {
     fn cjk_chars_allow_break_between_them() {
         let analysis = analyze("你好世界");
         // All but the last CJK segment should allow break after
-        let breakable_count = analysis.segments.iter()
+        let breakable_count = analysis
+            .segments
+            .iter()
             .filter(|s| s.kind == SegmentKind::Text && s.break_after)
             .count();
         // At least some should be breakable (all except possibly the last)
@@ -589,7 +593,11 @@ mod tests {
         let analysis = analyze("好。");
         // The 。should be merged with 好
         let texts: Vec<_> = analysis.segments.iter().map(|s| s.text.as_str()).collect();
-        assert!(texts.contains(&"好。"), "Expected '好。' merged, got {:?}", texts);
+        assert!(
+            texts.contains(&"好。"),
+            "Expected '好。' merged, got {:?}",
+            texts
+        );
     }
 
     #[test]
@@ -597,7 +605,11 @@ mod tests {
         // 「 should not end a line, so it merges with the following character
         let analysis = analyze("「好");
         let texts: Vec<_> = analysis.segments.iter().map(|s| s.text.as_str()).collect();
-        assert!(texts.contains(&"「好"), "Expected '「好' merged, got {:?}", texts);
+        assert!(
+            texts.contains(&"「好"),
+            "Expected '「好' merged, got {:?}",
+            texts
+        );
     }
 
     #[test]
@@ -606,7 +618,11 @@ mod tests {
         let analysis = analyze("Hello. World");
         let texts: Vec<_> = analysis.segments.iter().map(|s| s.text.as_str()).collect();
         // The period should be merged with Hello
-        assert!(texts.contains(&"Hello."), "Expected 'Hello.' merged, got {:?}", texts);
+        assert!(
+            texts.contains(&"Hello."),
+            "Expected 'Hello.' merged, got {:?}",
+            texts
+        );
     }
 
     #[test]
@@ -651,7 +667,12 @@ mod tests {
         let analysis = analyze("好」。");
         let texts: Vec<_> = analysis.segments.iter().map(|s| s.text.as_str()).collect();
         // All should merge into one segment
-        assert_eq!(texts.len(), 1, "Expected single merged segment, got {:?}", texts);
+        assert_eq!(
+            texts.len(),
+            1,
+            "Expected single merged segment, got {:?}",
+            texts
+        );
         assert_eq!(texts[0], "好」。");
     }
 
@@ -661,11 +682,17 @@ mod tests {
         let analysis = analyze(text);
         // Each character should be an individual segment (no kinsoku chars)
         // Count text segments
-        let text_segments: Vec<_> = analysis.segments.iter()
+        let text_segments: Vec<_> = analysis
+            .segments
+            .iter()
             .filter(|s| s.kind == SegmentKind::Text)
             .collect();
         // Should have many segments (roughly one per character)
-        assert!(text_segments.len() > 5, "Expected many segments, got {}", text_segments.len());
+        assert!(
+            text_segments.len() > 5,
+            "Expected many segments, got {}",
+            text_segments.len()
+        );
     }
 
     #[test]
@@ -675,6 +702,10 @@ mod tests {
         let texts: Vec<_> = analysis.segments.iter().map(|s| s.text.as_str()).collect();
         // （ should merge with テ, and ） is kinsoku-start so merges with previous
         // Result should be a small number of segments
-        assert!(texts.len() <= 3, "Expected few segments for parenthesized text, got {:?}", texts);
+        assert!(
+            texts.len() <= 3,
+            "Expected few segments for parenthesized text, got {:?}",
+            texts
+        );
     }
 }

@@ -28,8 +28,11 @@ pub struct PreparedLineBreak {
 impl PreparedLineBreak {
     /// Create from pre-measured widths and analysis.
     pub fn new(analysis: TextAnalysis, widths: Vec<f32>) -> Self {
-        assert_eq!(analysis.segments.len(), widths.len(),
-            "widths must match segments count");
+        assert_eq!(
+            analysis.segments.len(),
+            widths.len(),
+            "widths must match segments count"
+        );
         Self { widths, analysis }
     }
 }
@@ -114,16 +117,12 @@ pub fn layout(prepared: &PreparedLineBreak, max_width: f32) -> Vec<LineRange> {
                 });
                 // Skip leading spaces on new line
                 line_start = end;
-                while line_start < segments.len()
-                    && segments[line_start].kind == SegmentKind::Space
+                while line_start < segments.len() && segments[line_start].kind == SegmentKind::Space
                 {
                     line_start += 1;
                 }
                 // Recalculate width from new start to current position (inclusive)
-                line_width = 0.0;
-                for j in line_start..=i {
-                    line_width += widths[j];
-                }
+                line_width = widths[line_start..=i].iter().sum();
                 last_break = None;
                 // Don't increment i -- we need to re-check overflow for current segment
                 // with the new line_width. But we already computed it, so check inline.
@@ -216,7 +215,6 @@ pub fn line_text(analysis: &TextAnalysis, range: &LineRange) -> String {
     text.trim_end().to_string()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,15 +223,19 @@ mod tests {
     // Helper: create a PreparedLineBreak with uniform character width
     fn prepare_uniform(text: &str, char_width: f32) -> PreparedLineBreak {
         let analysis = analyze(text);
-        let widths: Vec<f32> = analysis.segments.iter().map(|seg| {
-            match seg.kind {
-                SegmentKind::Space => char_width, // space has width
-                SegmentKind::HardBreak => 0.0,
-                SegmentKind::ZeroWidthBreak => 0.0,
-                SegmentKind::SoftHyphen => 0.0, // invisible unless broken
-                SegmentKind::Text => seg.text.chars().count() as f32 * char_width,
-            }
-        }).collect();
+        let widths: Vec<f32> = analysis
+            .segments
+            .iter()
+            .map(|seg| {
+                match seg.kind {
+                    SegmentKind::Space => char_width, // space has width
+                    SegmentKind::HardBreak => 0.0,
+                    SegmentKind::ZeroWidthBreak => 0.0,
+                    SegmentKind::SoftHyphen => 0.0, // invisible unless broken
+                    SegmentKind::Text => seg.text.chars().count() as f32 * char_width,
+                }
+            })
+            .collect();
         PreparedLineBreak::new(analysis, widths)
     }
 
@@ -305,7 +307,11 @@ mod tests {
         let prepared = prepare_uniform("你好世界", 10.0);
         let lines = layout(&prepared, 30.0);
         // Should break into groups of ~3 chars
-        assert!(lines.len() >= 2, "Expected multiple lines, got {}", lines.len());
+        assert!(
+            lines.len() >= 2,
+            "Expected multiple lines, got {}",
+            lines.len()
+        );
         // Each line should have content
         for line in &lines {
             let text = line_text(&prepared.analysis, line);
@@ -320,9 +326,12 @@ mod tests {
         let lines = layout(&prepared, 15.0);
         // Check that no line starts with 。
         for line in &lines {
-            let text = line_text(&prepared.analysis, &line);
-            assert!(!text.starts_with('。'),
-                "Line should not start with kinsoku-start char: {:?}", text);
+            let text = line_text(&prepared.analysis, line);
+            assert!(
+                !text.starts_with('。'),
+                "Line should not start with kinsoku-start char: {:?}",
+                text
+            );
         }
     }
 
@@ -333,13 +342,17 @@ mod tests {
         let lines = layout(&prepared, 60.0);
         assert!(lines.len() >= 2);
         // Verify content is preserved
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .map(|l| line_text(&prepared.analysis, l))
             .collect::<Vec<_>>()
             .join("");
         // Remove spaces that might have been trimmed
         let expected = "Hello世界test";
-        assert_eq!(all_text, expected, "Content should be preserved across lines");
+        assert_eq!(
+            all_text, expected,
+            "Content should be preserved across lines"
+        );
     }
 
     // --- Emergency break (overflow-wrap) ---
@@ -350,9 +363,10 @@ mod tests {
         // One word, 100px total, max 30px
         let lines = layout(&prepared, 30.0);
         // Should still produce output (not hang or panic)
-        assert!(lines.len() >= 1);
+        assert!(!lines.is_empty());
         // Total content preserved
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .map(|l| line_text(&prepared.analysis, l))
             .collect::<Vec<_>>()
             .join("");
@@ -367,7 +381,11 @@ mod tests {
         let lines = layout(&prepared, 60.0);
         for line in &lines {
             let text = line_text(&prepared.analysis, line);
-            assert_eq!(text, text.trim_end(), "Line should not have trailing spaces");
+            assert_eq!(
+                text,
+                text.trim_end(),
+                "Line should not have trailing spaces"
+            );
         }
     }
 
@@ -379,39 +397,51 @@ mod tests {
         let text = "su\u{00AD}per";
         let analysis = analyze(text);
         // Give widths: "su"=20, SHY=0, "per"=30
-        let widths: Vec<f32> = analysis.segments.iter().map(|seg| {
-            match seg.kind {
+        let widths: Vec<f32> = analysis
+            .segments
+            .iter()
+            .map(|seg| match seg.kind {
                 SegmentKind::SoftHyphen => 0.0,
                 SegmentKind::Text => seg.text.chars().count() as f32 * 10.0,
                 SegmentKind::Space => 10.0,
                 _ => 0.0,
-            }
-        }).collect();
+            })
+            .collect();
         let prepared = PreparedLineBreak::new(analysis, widths);
         // Force break: max_width = 25 (fits "su" + SHY but not "per")
         let lines = layout(&prepared, 25.0);
         assert!(lines.len() >= 2, "Should break at soft hyphen");
         let first_line = line_text(&prepared.analysis, &lines[0]);
-        assert!(first_line.ends_with('-'), "First line should end with hyphen: {:?}", first_line);
+        assert!(
+            first_line.ends_with('-'),
+            "First line should end with hyphen: {:?}",
+            first_line
+        );
     }
 
     #[test]
     fn soft_hyphen_invisible_when_not_broken() {
         let text = "su\u{00AD}per";
         let analysis = analyze(text);
-        let widths: Vec<f32> = analysis.segments.iter().map(|seg| {
-            match seg.kind {
+        let widths: Vec<f32> = analysis
+            .segments
+            .iter()
+            .map(|seg| match seg.kind {
                 SegmentKind::SoftHyphen => 0.0,
                 SegmentKind::Text => seg.text.chars().count() as f32 * 10.0,
                 _ => 0.0,
-            }
-        }).collect();
+            })
+            .collect();
         let prepared = PreparedLineBreak::new(analysis, widths);
         // max_width = 100, everything fits on one line
         let lines = layout(&prepared, 100.0);
         assert_eq!(lines.len(), 1);
         let text = line_text(&prepared.analysis, &lines[0]);
-        assert!(!text.contains('-'), "Soft hyphen should be invisible: {:?}", text);
+        assert!(
+            !text.contains('-'),
+            "Soft hyphen should be invisible: {:?}",
+            text
+        );
         assert_eq!(text, "super");
     }
 
@@ -423,7 +453,8 @@ mod tests {
         let prepared = prepare_uniform(original, 10.0);
         let lines = layout(&prepared, 100.0);
 
-        let reconstructed: String = lines.iter()
+        let reconstructed: String = lines
+            .iter()
             .map(|l| line_text(&prepared.analysis, l))
             .collect::<Vec<_>>()
             .join(" ");
@@ -439,14 +470,17 @@ mod tests {
         let prepared = prepare_uniform(text, 10.0);
         // Allow ~10 chars per line
         let lines = layout(&prepared, 100.0);
-        assert!(lines.len() >= 1);
+        assert!(!lines.is_empty());
 
         // Verify no line starts with a punctuation mark
         for line in &lines {
             let text = line_text(&prepared.analysis, line);
             if let Some(first) = text.chars().next() {
-                assert!(first != '，' && first != '。',
-                    "Line should not start with CJK punctuation: {:?}", text);
+                assert!(
+                    first != '，' && first != '。',
+                    "Line should not start with CJK punctuation: {:?}",
+                    text
+                );
             }
         }
     }

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 /// StrokeLineCap specifies the shape to be used at the end of open subpaths when stroked
 use resvg::tiny_skia::LineCap as StrokeLineCap;
 /// StrokeLineJoin specifies the shape to be used at the corners of paths when stroked
 use resvg::tiny_skia::LineJoin as StrokeLineJoin;
 use resvg::tiny_skia::Point;
+use std::collections::HashMap;
 // use resvg::usvg::StrokeWidth; // Removed unused import
 use std::fmt::Write;
 
@@ -13,15 +13,13 @@ use rustybuzz::ttf_parser::{GlyphId, Rect};
 use rustybuzz::Face;
 
 use rustybuzz::GlyphBuffer;
-use svg::node::element::{Path, Group, Use}; // Removed Definitions import
+use svg::node::element::{Group, Path, Use}; // Removed Definitions import
 use svg::Node; // Added Node
-
 
 // --- Glyph Cache and Definitions ---
 pub type GlyphCache = HashMap<u16, String>; // GlyphId -> SVG ID (e.g., "g123")
-// Store Box<dyn Node> because Node trait object is not Sized
+                                            // Store Box<dyn Node> because Node trait object is not Sized
 pub type GlyphDefs = HashMap<String, Box<dyn Node>>; // SVG ID -> Boxed <path> Node for <defs>
-
 
 /// path configuration for SVG1.1 https://www.w3.org/TR/SVG11/painting.html
 #[derive(Clone, Debug)]
@@ -100,8 +98,10 @@ impl TextBuilder {
         glyphs: &GlyphBuffer,
         glyph_cache: &mut GlyphCache,
         glyph_defs: &mut GlyphDefs, // Takes mutable reference to HashMap<String, Box<dyn Node>>
-    ) -> (Group, Rect) { // Rect uses i16
-        let ft_face = font_config.get_font_by_style(font_style)
+    ) -> (Group, Rect) {
+        // Rect uses i16
+        let ft_face = font_config
+            .get_font_by_style(font_style)
             .or_else(|| font_config.get_font_by_style(&FontStyle::Regular))
             .expect("Font face (style or regular) not found during build"); // Should have been checked earlier
 
@@ -167,9 +167,7 @@ impl TextBuilder {
 
                 // Create the <path> node for <defs>
                 // No fill/stroke here; apply to <use> or parent group
-                let def_path = Path::new()
-                    .set("id", svg_id.clone())
-                    .set("d", d_str);
+                let def_path = Path::new().set("id", svg_id.clone()).set("d", d_str);
 
                 // Insert the Boxed node into glyph_defs
                 glyph_defs.insert(svg_id.clone(), Box::new(def_path));
@@ -213,20 +211,21 @@ impl TextBuilder {
             min_y = min_y.min(estimated_glyph_min_y);
             max_y = max_y.max(estimated_glyph_max_y);
 
-
             // --- Advance cursor for the next glyph ---
             current_x += advance_width;
 
             // Check if glyph looks like whitespace (no outline, has advance)
-             if hb_face.outline_glyph(GlyphId(glyph_id_u16), &mut NullOutlineBuilder).is_none() && glyph_pos.x_advance > 0 {
-                 prev_space_glyph = true; // It's likely a space, don't add letter-spacing before next char
-             }
-
+            if hb_face
+                .outline_glyph(GlyphId(glyph_id_u16), &mut NullOutlineBuilder)
+                .is_none()
+                && glyph_pos.x_advance > 0
+            {
+                prev_space_glyph = true; // It's likely a space, don't add letter-spacing before next char
+            }
         }
 
         // Add final letter spacing if the last char wasn't space-like
         max_x += if !prev_space_glyph { letter_space } else { 0.0 };
-
 
         // Calculate final bounding box using i16 for consistency with Rect
         let bbox = Rect {
@@ -236,7 +235,6 @@ impl TextBuilder {
             // Use line height for max_y relative to origin, adjust for scale
             y_max: (self.origin.y + target_glyph_height).ceil() as i16,
         };
-
 
         if font_config.get_debug() {
             println!(
@@ -251,7 +249,6 @@ impl TextBuilder {
             .set("stroke-width", self.path_config.stroke_width)
             .set("stroke-linecap", self.path_config.get_stroke_linecap())
             .set("stroke-linejoin", self.path_config.get_stroke_linejoin());
-
 
         (use_group, bbox)
     }
@@ -300,11 +297,29 @@ impl ttf_parser::OutlineBuilder for GlyphPathBuilder<'_> {
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        write!(self.d, "Q {} {} {} {}", self.tx(x1), self.ty(y1), self.tx(x), self.ty(y)).unwrap();
+        write!(
+            self.d,
+            "Q {} {} {} {}",
+            self.tx(x1),
+            self.ty(y1),
+            self.tx(x),
+            self.ty(y)
+        )
+        .unwrap();
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        write!(self.d, "C {} {} {} {} {} {}", self.tx(x1), self.ty(y1), self.tx(x2), self.ty(y2), self.tx(x), self.ty(y)).unwrap();
+        write!(
+            self.d,
+            "C {} {} {} {} {} {}",
+            self.tx(x1),
+            self.ty(y1),
+            self.tx(x2),
+            self.ty(y2),
+            self.tx(x),
+            self.ty(y)
+        )
+        .unwrap();
     }
 
     fn close(&mut self) {
@@ -323,4 +338,3 @@ impl ttf_parser::OutlineBuilder for NullOutlineBuilder {
     fn curve_to(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _x: f32, _y: f32) {}
     fn close(&mut self) {}
 }
-

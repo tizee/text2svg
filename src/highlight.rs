@@ -1,8 +1,11 @@
-use syntect::{highlighting::{Color, FontStyle as SynFontStyle, Theme, ThemeSet}, parsing::SyntaxSet, LoadingError}; // Renamed FontStyle to avoid clash
 use std::{fmt::Display, path::Path};
+use syntect::{
+    highlighting::{Color, FontStyle as SynFontStyle, Theme, ThemeSet},
+    parsing::SyntaxSet,
+    LoadingError,
+}; // Renamed FontStyle to avoid clash
 
 use crate::font::FontStyle as AppFontStyle; // Renamed our FontStyle
-
 
 pub struct HighlightSetting {
     pub syntax_set: SyntaxSet,
@@ -24,7 +27,11 @@ impl Default for HighlightSetting {
 
 impl HighlightSetting {
     /// Adds a theme from a .tmTheme file path.
-    pub fn add_theme_from_path<P: AsRef<Path>>(&mut self, name: &str, path: P) -> Result<(), LoadingError> {
+    pub fn add_theme_from_path<P: AsRef<Path>>(
+        &mut self,
+        name: &str,
+        path: P,
+    ) -> Result<(), LoadingError> {
         let theme = ThemeSet::get_theme(path)?; // This handles reading the file
         self.theme_set.themes.insert(name.to_string(), theme);
         Ok(())
@@ -45,21 +52,26 @@ impl HighlightSetting {
 
 // Wrapper for syntect::highlighting::Color to provide Display impl for rgba()
 pub struct HighlightColor {
-    inner: Color
+    inner: Color,
 }
 
 impl HighlightColor {
     pub fn new(color: Color) -> Self {
-        Self {
-            inner: color
-        }
+        Self { inner: color }
     }
 }
 
 impl Display for HighlightColor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Format as rgba(r,g,b,a) where alpha is normalized to 0.0-1.0
-        write!(f,"rgba({},{},{},{:.3})", self.inner.r, self.inner.g, self.inner.b, self.inner.a as f32 / 255.0)
+        write!(
+            f,
+            "rgba({},{},{},{:.3})",
+            self.inner.r,
+            self.inner.g,
+            self.inner.b,
+            self.inner.a as f32 / 255.0
+        )
     }
 }
 
@@ -70,9 +82,7 @@ pub struct HighlightFontStyle {
 
 impl HighlightFontStyle {
     pub fn new(style: SynFontStyle) -> Self {
-        Self {
-            inner: style
-        }
+        Self { inner: style }
     }
 
     /// Gets the corresponding application FontStyle.
@@ -90,7 +100,7 @@ impl HighlightFontStyle {
 }
 
 #[cfg(test)]
-mod test_highlight{
+mod test_highlight {
     use super::*;
     use crate::font::FontStyle as AppFontStyle; // Use the aliased name
 
@@ -122,23 +132,42 @@ mod test_highlight{
         assert_eq!(underline_app_style.get_style(), AppFontStyle::Regular);
     }
 
-     #[test]
+    #[test]
     fn test_color_display() {
         // Opaque black
-        let black = HighlightColor::new(Color { r: 0, g: 0, b: 0, a: 255 });
+        let black = HighlightColor::new(Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        });
         assert_eq!(black.to_string(), "rgba(0,0,0,1.000)");
 
         // Opaque white
-        let white = HighlightColor::new(Color { r: 255, g: 255, b: 255, a: 255 });
+        let white = HighlightColor::new(Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        });
         assert_eq!(white.to_string(), "rgba(255,255,255,1.000)");
 
         // Semi-transparent red
-        let red_transparent = HighlightColor::new(Color { r: 255, g: 0, b: 0, a: 128 }); // 128 is approx 0.5 alpha
+        let red_transparent = HighlightColor::new(Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 128,
+        }); // 128 is approx 0.5 alpha
         assert_eq!(red_transparent.to_string(), "rgba(255,0,0,0.502)"); // Check precision
 
-         // Fully transparent
-        let fully_transparent = HighlightColor::new(Color { r: 100, g: 100, b: 100, a: 0 });
+        // Fully transparent
+        let fully_transparent = HighlightColor::new(Color {
+            r: 100,
+            g: 100,
+            b: 100,
+            a: 0,
+        });
         assert_eq!(fully_transparent.to_string(), "rgba(100,100,100,0.000)");
     }
 }
-
