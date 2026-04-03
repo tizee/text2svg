@@ -5,6 +5,8 @@ use std::path::Path;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use crate::font::{FontConfig, FontStyle};
+use crate::text_analysis::{self, SegmentKind};
+use crate::line_break::{self, PreparedLineBreak};
 use rustybuzz::Face;
 
 // Reads file line by line, splitting lines longer than `max_chars_per_line`.
@@ -160,38 +162,40 @@ impl<R: BufRead> Iterator for PixelWidthLineIterator<'_, R> {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Process buffer first if exceeding max_pixel_width
-        if let Some(text_width) = calculate_text_width(&self.buffer, self.font_config, self.font_style) {
-            if text_width > self.max_pixel_width {
-                let (line_part, remaining_part) = split_line_by_pixel_width(&self.buffer, self.max_pixel_width, self.font_config, self.font_style);
-                self.buffer = remaining_part;
-                return Some(line_part);
-            }
-        }
-
-        // If buffer has content within max_pixel_width, return it
+        // Process buffer first if it has content
         if !self.buffer.is_empty() {
             let buffer_content = std::mem::take(&mut self.buffer);
-            return Some(buffer_content);
+            // Use the new pipeline to wrap
+            let wrapped = wrap_text_by_pixel_width(
+                &buffer_content, self.max_pixel_width,
+                self.font_config, self.font_style,
+            );
+            if wrapped.len() > 1 {
+                // Store remaining lines in buffer (join with newline to re-split later)
+                self.buffer = wrapped[1..].join("\n");
+                return Some(wrapped[0].clone());
+            }
+            return Some(wrapped.into_iter().next().unwrap_or_default());
         }
 
         // Buffer empty, read a new line
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => None, // EOF
-            Ok(_) => { // Successfully read a line
+            Ok(_) => {
                 let trimmed_line = line.trim_end_matches(['\r', '\n']).to_string();
 
-                // If line exceeds max_pixel_width, split it
-                if let Some(text_width) = calculate_text_width(&trimmed_line, self.font_config, self.font_style) {
-                    if text_width > self.max_pixel_width {
-                        let (line_part, remaining_part) = split_line_by_pixel_width(&trimmed_line, self.max_pixel_width, self.font_config, self.font_style);
-                        self.buffer = remaining_part;
-                        return Some(line_part);
-                    }
+                // Use new pipeline for wrapping
+                let wrapped = wrap_text_by_pixel_width(
+                    &trimmed_line, self.max_pixel_width,
+                    self.font_config, self.font_style,
+                );
+                if wrapped.len() > 1 {
+                    self.buffer = wrapped[1..].join("\n");
+                    Some(wrapped[0].clone())
+                } else {
+                    Some(wrapped.into_iter().next().unwrap_or_default())
                 }
-                // Line fits within max_pixel_width
-                Some(trimmed_line)
             }
             Err(e) => {
                 eprintln!("Error reading line: {}", e);
@@ -237,7 +241,7 @@ fn split_line(line: &str, max_width: usize) -> (String, String) {
 }
 
 // Calculate the pixel width of text using font metrics
-fn calculate_text_width(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) -> Option<f32> {
+pub fn calculate_text_width(text: &str, font_config: &mut FontConfig, font_style: &FontStyle) -> Option<f32> {
     if text.is_empty() {
         return Some(0.0);
     }
@@ -278,111 +282,48 @@ fn calculate_text_width(text: &str, font_config: &mut FontConfig, font_style: &F
     Some(total_width)
 }
 
-// Split a line based on pixel width, trying to wrap at whitespace
-fn split_line_by_pixel_width(
-    line: &str, 
-    max_pixel_width: f32, 
-    font_config: &mut FontConfig, 
-    font_style: &FontStyle
-) -> (String, String) {
-    if let Some(text_width) = calculate_text_width(line, font_config, font_style) {
-        if text_width <= max_pixel_width {
-            return (line.trim_end().to_string(), String::new());
-        }
-    } else {
-        // Fallback to character-based splitting if width calculation fails
-        return split_line(line, 50); // Arbitrary fallback
-    }
-
-    // Find the optimal split point using binary search approach
-    let chars: Vec<char> = line.chars().collect();
-    let mut best_split = 0;
-    let mut wrap_split = None;
-
-    // First pass: find the maximum characters that fit
-    for i in 1..=chars.len() {
-        let substring: String = chars[..i].iter().collect();
-        if let Some(width) = calculate_text_width(&substring, font_config, font_style) {
-            if width <= max_pixel_width {
-                best_split = i;
-                // Check if this position is at a word boundary
-                if i < chars.len() && chars[i-1].is_ascii_whitespace() {
-                    wrap_split = Some(i-1);
-                }
-            } else {
-                break;
+/// Measure segment widths using font metrics and prepare for line breaking.
+fn prepare_segments(
+    analysis: &text_analysis::TextAnalysis,
+    font_config: &mut FontConfig,
+    font_style: &FontStyle,
+) -> PreparedLineBreak {
+    let widths: Vec<f32> = analysis.segments.iter().map(|seg| {
+        match seg.kind {
+            SegmentKind::HardBreak | SegmentKind::ZeroWidthBreak => 0.0,
+            SegmentKind::SoftHyphen => 0.0,
+            SegmentKind::Space | SegmentKind::Text => {
+                calculate_text_width(&seg.text, font_config, font_style)
+                    .unwrap_or(0.0)
             }
         }
-    }
-
-    // Use word boundary if we found one within reasonable distance
-    let mut split_point = if let Some(wrap_pos) = wrap_split {
-        // Only use word boundary if it's not too far from the optimal split
-        let distance = best_split.saturating_sub(wrap_pos);
-        if distance <= best_split / 4 { // Within 25% of optimal
-            wrap_pos
-        } else {
-            best_split
-        }
-    } else {
-        // Look backwards from best_split for whitespace
-        let mut search_pos = best_split;
-        while search_pos > 0 {
-            search_pos -= 1;
-            if chars[search_pos].is_ascii_whitespace() {
-                break;
-            }
-        }
-        if search_pos > 0 && chars[search_pos].is_ascii_whitespace() {
-            search_pos
-        } else {
-            best_split
-        }
-    };
-
-    if split_point == 0 {
-        // Emergency fallback: at least take one character
-        split_point = 1.min(chars.len());
-    }
-
-    let first_part: String = chars[..split_point].iter().collect();
-    let second_part: String = chars[split_point..].iter().collect();
-
-    (first_part.trim_end().to_string(), second_part.trim_start().to_string())
+    }).collect();
+    PreparedLineBreak::new(analysis.clone(), widths)
 }
 
-// Convenience function to wrap a single text string by pixel width
+/// Wrap text using Unicode-aware segmentation and greedy line breaking.
+/// Uses text analysis for CJK detection, kinsoku rules, and proper break points.
 pub fn wrap_text_by_pixel_width(
     text: &str,
     max_pixel_width: f32,
     font_config: &mut FontConfig,
-    font_style: &FontStyle
+    font_style: &FontStyle,
 ) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }
 
-    let mut lines = Vec::new();
-    let mut remaining = text.to_string();
+    let analysis = text_analysis::analyze(text);
+    let prepared = prepare_segments(&analysis, font_config, font_style);
+    let line_ranges = line_break::layout(&prepared, max_pixel_width);
 
-    while !remaining.is_empty() {
-        if let Some(text_width) = calculate_text_width(&remaining, font_config, font_style) {
-            if text_width <= max_pixel_width {
-                lines.push(remaining);
-                break;
-            }
-        }
-
-        let (line_part, remaining_part) = split_line_by_pixel_width(&remaining, max_pixel_width, font_config, font_style);
-        if line_part.is_empty() {
-            // Prevent infinite loop
-            break;
-        }
-        lines.push(line_part);
-        remaining = remaining_part;
+    if line_ranges.is_empty() {
+        return vec![String::new()];
     }
 
-    lines
+    line_ranges.iter()
+        .map(|range| line_break::line_text(&prepared.analysis, range))
+        .collect()
 }
 
 
@@ -580,43 +521,36 @@ mod test_utils{
   }
 
   #[test]
-  fn test_split_line_by_pixel_width_no_split_needed() {
-        // Test splitting when text fits within pixel width
+  fn test_wrap_no_split_needed() {
+        // Test wrapping when text fits within pixel width
         use crate::font::FontStyle;
         
         let mut font_config = create_test_font_config();
         let text = "Short";
         
         // Use a very large pixel width - text should not be split
-        let (first, second) = split_line_by_pixel_width(text, 10000.0, &mut font_config, &FontStyle::Regular);
+        let result = wrap_text_by_pixel_width(text, 10000.0, &mut font_config, &FontStyle::Regular);
         
-        // Should not split - all text in first part
-        assert_eq!(first.trim(), text);
-        assert!(second.is_empty());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], text);
   }
 
   #[test]
-  fn test_split_line_by_pixel_width_needs_split() {
-        // Test splitting when text exceeds pixel width
+  fn test_wrap_needs_split() {
+        // Test wrapping when text exceeds pixel width
         use crate::font::FontStyle;
         
         let mut font_config = create_test_font_config();
         let text = "This is a longer text that should be split";
         
         // Use a small pixel width to force splitting
-        let (first, second) = split_line_by_pixel_width(text, 50.0, &mut font_config, &FontStyle::Regular);
+        let result = wrap_text_by_pixel_width(text, 50.0, &mut font_config, &FontStyle::Regular);
         
-        // Should have split the line
-        assert!(!first.is_empty());
+        // Should have split into multiple lines
+        assert!(result.len() > 1);
         
-        // Verify the split preserves the original text
-        let combined = if second.is_empty() {
-            first.trim().to_string()
-        } else {
-            format!("{} {}", first.trim(), second.trim()).trim().to_string()
-        };
-        
-        // Remove multiple spaces that might occur during splitting and joining
+        // Verify content preservation
+        let combined = result.join(" ");
         let normalized_combined = combined.split_whitespace().collect::<Vec<_>>().join(" ");
         let normalized_original = text.split_whitespace().collect::<Vec<_>>().join(" ");
         

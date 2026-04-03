@@ -22,12 +22,28 @@ use svg::node::element::{Group, Style};
 use svg::Document;
 use syntect::highlighting::Style as TokenStyle;
 
+/// Text alignment for multi-line rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl Default for TextAlign {
+    fn default() -> Self {
+        TextAlign::Left
+    }
+}
+
 // render config for non-highlight mode
 pub struct RenderConfig {
     animate: bool,
     font_style: FontStyle,
     max_width: Option<usize>,
     max_pixel_width: Option<f32>,
+    align: TextAlign,
 }
 
 impl RenderConfig {
@@ -37,6 +53,7 @@ impl RenderConfig {
             font_style: style,
             max_width: None,
             max_pixel_width: None,
+            align: TextAlign::Left,
         }
     }
 
@@ -50,12 +67,21 @@ impl RenderConfig {
         self
     }
 
+    pub fn set_align(&mut self, align: TextAlign) -> &mut Self {
+        self.align = align;
+        self
+    }
+
     pub fn get_font_style(&self) -> &FontStyle {
         &self.font_style
     }
 
     pub fn get_animate(&self) -> bool {
         self.animate
+    }
+
+    pub fn get_align(&self) -> TextAlign {
+        self.align
     }
 }
 
@@ -252,42 +278,54 @@ pub fn render_text_file_to_svg(file: &PathBuf, font_config: &mut FontConfig, ren
     }
 
     if let Ok(lines) = file_lines {
-        for (line_index, line) in lines.iter().enumerate() {
-            let line_group_transform = format!("translate(0, {})", current_height);
+        // First pass: render all lines, collect groups and widths
+        let mut rendered_lines: Vec<(Group, u32)> = Vec::new(); // (group, width)
+
+        for line in lines.iter() {
             if line.is_empty() {
-                // Still advance height for empty lines
+                rendered_lines.push((Group::new(), 0));
             } else if let Some((line_content_group, line_bbox)) =
-                // Pass glyph_defs as mutable reference
                 render_text_line(0.0, 0.0, line, font_config, render_config, &mut glyph_cache, &mut glyph_defs)
             {
-                // Wrap line content in a group for positioning and animation
-                let mut positioned_line_group = Group::new()
-                    .set("transform", line_group_transform)
-                    .add(line_content_group);
-                
-                // Add animation class and delay for each line
-                if render_config.get_animate() {
-                    let animation_delay = line_index as f32 * 0.8; // 0.8s delay between lines
-                    positioned_line_group = positioned_line_group
-                        .set("class", "text-line")
-                        .set("style", format!("animation-delay: {}s", animation_delay));
-                }
-                
-                main_group = main_group.add(positioned_line_group);
-                // Cast i16 width to u32 for max comparison
-                max_width = max_width.max(line_bbox.width() as u32);
+                let line_w = line_bbox.width() as u32;
+                max_width = max_width.max(line_w);
+                rendered_lines.push((line_content_group, line_w));
+            } else {
+                rendered_lines.push((Group::new(), 0));
             }
-            current_height += line_height; // Move to next line position
+        }
+
+        // Second pass: position lines with alignment
+        let align = render_config.get_align();
+        for (line_index, (line_content_group, line_w)) in rendered_lines.into_iter().enumerate() {
+            let x_offset = match align {
+                TextAlign::Left => 0.0,
+                TextAlign::Center => (max_width as f32 - line_w as f32) / 2.0,
+                TextAlign::Right => max_width as f32 - line_w as f32,
+            };
+            let line_group_transform = format!("translate({}, {})", x_offset, current_height);
+            let mut positioned_line_group = Group::new()
+                .set("transform", line_group_transform)
+                .add(line_content_group);
+
+            if render_config.get_animate() {
+                let animation_delay = line_index as f32 * 0.8;
+                positioned_line_group = positioned_line_group
+                    .set("class", "text-line")
+                    .set("style", format!("animation-delay: {}s", animation_delay));
+            }
+
+            main_group = main_group.add(positioned_line_group);
+            current_height += line_height;
         }
 
         // Add definitions
         let mut defs = Definitions::new();
-        // Iterate over the HashMap using .iter() and clone the Box<dyn Node>
         for (_id, node_box) in glyph_defs.iter() {
             defs = defs.add(node_box.clone());
         }
-        doc = doc.add(defs); // Add defs first
-        doc = doc.add(main_group); // Add text content
+        doc = doc.add(defs);
+        doc = doc.add(main_group);
 
         if render_config.get_animate() {
             doc = doc.add(get_animation_style());
@@ -318,42 +356,54 @@ fn render_text_lines_to_svg(lines: Vec<String>, font_config: &mut FontConfig, re
         .set("fill", font_config.get_fill_color().as_str())
         .set("stroke", font_config.get_color().as_str());
 
-    for (line_index, line) in lines.iter().enumerate() {
-        let line_group_transform = format!("translate(0, {})", current_height);
+    // First pass: render all lines, collect groups and widths
+    let mut rendered_lines: Vec<(Group, u32)> = Vec::new();
+
+    for line in lines.iter() {
         if line.is_empty() {
-            // Still advance height for empty lines
+            rendered_lines.push((Group::new(), 0));
         } else if let Some((line_content_group, line_bbox)) =
-            // Pass glyph_defs as mutable reference
             render_text_line(0.0, 0.0, line, font_config, render_config, &mut glyph_cache, &mut glyph_defs)
         {
-            // Wrap line content in a group for positioning and animation
-            let mut positioned_line_group = Group::new()
-                .set("transform", line_group_transform)
-                .add(line_content_group);
-            
-            // Add animation class and delay for each line
-            if render_config.get_animate() {
-                let animation_delay = line_index as f32 * 0.8; // 0.8s delay between lines
-                positioned_line_group = positioned_line_group
-                    .set("class", "text-line")
-                    .set("style", format!("animation-delay: {}s", animation_delay));
-            }
-            
-            main_group = main_group.add(positioned_line_group);
-            // Cast i16 width to u32 for max comparison
-            max_width = max_width.max(line_bbox.width() as u32);
+            let line_w = line_bbox.width() as u32;
+            max_width = max_width.max(line_w);
+            rendered_lines.push((line_content_group, line_w));
+        } else {
+            rendered_lines.push((Group::new(), 0));
         }
-        current_height += line_height; // Move to next line position
+    }
+
+    // Second pass: position lines with alignment
+    let align = render_config.get_align();
+    for (line_index, (line_content_group, line_w)) in rendered_lines.into_iter().enumerate() {
+        let x_offset = match align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => (max_width as f32 - line_w as f32) / 2.0,
+            TextAlign::Right => max_width as f32 - line_w as f32,
+        };
+        let line_group_transform = format!("translate({}, {})", x_offset, current_height);
+        let mut positioned_line_group = Group::new()
+            .set("transform", line_group_transform)
+            .add(line_content_group);
+
+        if render_config.get_animate() {
+            let animation_delay = line_index as f32 * 0.8;
+            positioned_line_group = positioned_line_group
+                .set("class", "text-line")
+                .set("style", format!("animation-delay: {}s", animation_delay));
+        }
+
+        main_group = main_group.add(positioned_line_group);
+        current_height += line_height;
     }
 
     // Add definitions
     let mut defs = Definitions::new();
-    // Iterate over the HashMap using .iter() and clone the Box<dyn Node>
     for (_id, node_box) in glyph_defs.iter() {
         defs = defs.add(node_box.clone());
     }
-    doc = doc.add(defs); // Add defs first
-    doc = doc.add(main_group); // Add text content
+    doc = doc.add(defs);
+    doc = doc.add(main_group);
 
     if render_config.get_animate() {
         doc = doc.add(get_animation_style());

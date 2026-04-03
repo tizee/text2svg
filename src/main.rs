@@ -3,12 +3,14 @@ mod render;
 mod svg;
 mod utils;
 mod highlight;
+mod text_analysis;
+mod line_break;
 
 use anyhow::Error;
 use clap::Parser;
 use font::{FontConfig, FontStyle};
 use highlight::HighlightSetting;
-use render::RenderConfig;
+use render::{RenderConfig, TextAlign};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -81,6 +83,10 @@ struct Args {
     /// List available built-in highlighting themes
     #[arg(long)]
     list_theme: bool,
+
+    /// Text alignment for multi-line output (left, center, right)
+    #[arg(value_enum, long, default_value = "left")]
+    align: Option<TextAlign>,
 
     /// Enable debug logging
     #[arg(short, long)]
@@ -212,6 +218,7 @@ fn run() -> Result<(),Error> {
     let mut render_config = RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::Regular));
     render_config.set_max_width(args.width);
     render_config.set_max_pixel_width(args.pixel_width);
+    render_config.set_align(args.align.unwrap_or(TextAlign::Left));
 
 
     // --- Rendering Logic ---
