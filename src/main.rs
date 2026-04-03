@@ -1,16 +1,8 @@
-mod font;
-mod render;
-mod svg;
-mod utils;
-mod highlight;
-mod text_analysis;
-mod line_break;
-
 use anyhow::Error;
 use clap::Parser;
-use font::{FontConfig, FontStyle};
-use highlight::HighlightSetting;
-use render::{RenderConfig, TextAlign};
+use text2svg::font::{FontConfig, FontStyle};
+use text2svg::highlight::HighlightSetting;
+use text2svg::render::{self, RenderConfig, TextAlign};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -116,7 +108,7 @@ fn run() -> Result<(),Error> {
 
     if args.list_fonts {
         println!("Installed Font Families:");
-        let fonts = font::fonts();
+        let fonts = text2svg::font::fonts();
         if fonts.is_empty() {
             println!("  (No fonts found or error listing fonts)");
         } else {

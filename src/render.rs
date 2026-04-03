@@ -23,8 +23,9 @@ use svg::Document;
 use syntect::highlighting::Style as TokenStyle;
 
 /// Text alignment for multi-line rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "lower")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "cli", value(rename_all = "lower"))]
 pub enum TextAlign {
     Left,
     Center,
@@ -34,6 +35,38 @@ pub enum TextAlign {
 impl Default for TextAlign {
     fn default() -> Self {
         TextAlign::Left
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseTextAlignErr;
+
+impl std::fmt::Display for ParseTextAlignErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid text alignment (expected: left, center, right)")
+    }
+}
+
+impl std::str::FromStr for TextAlign {
+    type Err = ParseTextAlignErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "left" => Ok(TextAlign::Left),
+            "center" => Ok(TextAlign::Center),
+            "right" => Ok(TextAlign::Right),
+            _ => Err(ParseTextAlignErr),
+        }
+    }
+}
+
+impl std::fmt::Display for TextAlign {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextAlign::Left => write!(f, "left"),
+            TextAlign::Center => write!(f, "center"),
+            TextAlign::Right => write!(f, "right"),
+        }
     }
 }
 

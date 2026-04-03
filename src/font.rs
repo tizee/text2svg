@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use clap::ValueEnum;
 use font_kit::error::{FontLoadingError, SelectionError};
 use font_kit::font::Font;
 use font_kit::properties::{Style, Weight};
@@ -19,8 +18,9 @@ pub fn fonts() -> Vec<String> {
     }
 }
 
-#[derive(ValueEnum, Debug, PartialEq, Clone, Eq, Hash)]
-#[value(rename_all="lower")]
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "cli", value(rename_all = "lower"))]
 pub enum FontStyle {
     // Weight
     Thin,
@@ -38,6 +38,26 @@ pub enum FontStyle {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParseFontStyleErr;
+
+impl std::str::FromStr for FontStyle {
+    type Err = ParseFontStyleErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "thin" => Ok(FontStyle::Thin),
+            "extralight" | "extra_light" => Ok(FontStyle::ExtraLight),
+            "light" => Ok(FontStyle::Light),
+            "regular" => Ok(FontStyle::Regular),
+            "medium" => Ok(FontStyle::Medium),
+            "semibold" | "semi_bold" => Ok(FontStyle::SemiBold),
+            "bold" => Ok(FontStyle::Bold),
+            "extrabold" | "extra_bold" => Ok(FontStyle::ExtraBold),
+            "black" => Ok(FontStyle::Black),
+            "italic" => Ok(FontStyle::Italic),
+            _ => Err(ParseFontStyleErr),
+        }
+    }
+}
 
 impl Display for FontStyle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
