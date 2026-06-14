@@ -1,5 +1,6 @@
 // some useful utility functions
 use crate::font::{FontConfig, FontStyle};
+use crate::knuth_plass::{self, Item};
 use crate::line_break::{self, PreparedLineBreak};
 use crate::text_analysis::{self, SegmentKind};
 use anyhow::{anyhow, Result};
@@ -357,6 +358,175 @@ pub fn wrap_text_by_pixel_width(
         .collect()
 }
 
+/// A wrapped line carrying justification data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JustifiedLine {
+    /// The text content of the line (trailing spaces trimmed).
+    pub text: String,
+    /// Glue adjustment ratio for this line (positive = stretch, negative = shrink).
+    pub ratio: f32,
+    /// Natural pixel width of the line content before adjustment.
+    pub width: f32,
+}
+
+/// Convert measured segments into Knuth-Plass items.
+///
+/// Mapping:
+/// - Text          -> Box
+/// - Space         -> Glue (stretchable; this is what enables justification)
+/// - ZeroWidthBreak / SoftHyphen -> zero-width legal Penalty
+/// - HardBreak     -> forced Penalty
+/// - CJK boundary (Text segment with break_after) -> a zero-width Penalty is
+///   inserted after the Box so the optimizer may break between ideographs.
+///
+/// Returns the item list plus, for each item, the index of the segment it came
+/// from (None for synthetic break penalties).
+fn segments_to_items(
+    analysis: &text_analysis::TextAnalysis,
+    widths: &[f32],
+) -> (Vec<Item>, Vec<Option<usize>>) {
+    let segments = &analysis.segments;
+    let mut items: Vec<Item> = Vec::new();
+    let mut origin: Vec<Option<usize>> = Vec::new();
+
+    for (i, seg) in segments.iter().enumerate() {
+        let w = widths[i];
+        match seg.kind {
+            SegmentKind::Text => {
+                items.push(Item::Box { width: w });
+                origin.push(Some(i));
+                // Insert a synthetic break opportunity after CJK characters.
+                if seg.break_after {
+                    items.push(Item::Penalty {
+                        width: 0.0,
+                        penalty: 0.0,
+                        flagged: false,
+                    });
+                    origin.push(None);
+                }
+            }
+            SegmentKind::Space => {
+                // Space stretch/shrink derived from its own width (em-like).
+                items.push(Item::Glue {
+                    width: w,
+                    stretch: w * 0.5,
+                    shrink: w / 3.0,
+                });
+                origin.push(Some(i));
+            }
+            SegmentKind::ZeroWidthBreak | SegmentKind::SoftHyphen => {
+                items.push(Item::Penalty {
+                    width: 0.0,
+                    penalty: 0.0,
+                    flagged: seg.kind == SegmentKind::SoftHyphen,
+                });
+                origin.push(Some(i));
+            }
+            SegmentKind::HardBreak => {
+                items.push(Item::Penalty {
+                    width: 0.0,
+                    penalty: knuth_plass::FORCED_PENALTY,
+                    flagged: false,
+                });
+                origin.push(Some(i));
+            }
+        }
+    }
+
+    // TeX paragraph terminator: infinite-stretch glue then a forced break, so
+    // the optimizer always produces a final line covering the trailing content.
+    items.push(Item::Glue {
+        width: 0.0,
+        stretch: 1_000_000.0,
+        shrink: 0.0,
+    });
+    origin.push(None);
+    items.push(Item::Penalty {
+        width: 0.0,
+        penalty: knuth_plass::FORCED_PENALTY,
+        flagged: false,
+    });
+    origin.push(None);
+
+    (items, origin)
+}
+
+/// Wrap text using Unicode-aware segmentation and Knuth-Plass optimal breaking.
+///
+/// Returns per-line text together with the justification ratio and natural
+/// width, so the renderer can justify lines. Falls back internally to a greedy
+/// solution when no feasible optimal break exists.
+pub fn wrap_text_knuth_plass(
+    text: &str,
+    max_pixel_width: f32,
+    font_config: &mut FontConfig,
+    font_style: &FontStyle,
+) -> Vec<JustifiedLine> {
+    if text.is_empty() {
+        return vec![JustifiedLine {
+            text: String::new(),
+            ratio: 0.0,
+            width: 0.0,
+        }];
+    }
+
+    let analysis = text_analysis::analyze(text);
+    let prepared = prepare_segments(&analysis, font_config, font_style);
+    let (items, origin) = segments_to_items(&analysis, &prepared.widths);
+
+    if items.is_empty() {
+        return vec![JustifiedLine {
+            text: String::new(),
+            ratio: 0.0,
+            width: 0.0,
+        }];
+    }
+
+    let params = knuth_plass::Params::default();
+    let break_lines = knuth_plass::break_lines(&items, max_pixel_width, &params);
+
+    if break_lines.is_empty() {
+        return vec![JustifiedLine {
+            text: String::new(),
+            ratio: 0.0,
+            width: 0.0,
+        }];
+    }
+
+    break_lines
+        .iter()
+        .map(|bl| {
+            // Map the item range back to segment indices, then reuse line_text.
+            let seg_start = origin[bl.start.min(origin.len() - 1)]
+                .or_else(|| {
+                    // start may land on a synthetic penalty; find next real segment
+                    origin[bl.start..].iter().flatten().next().copied()
+                })
+                .unwrap_or(0);
+            let seg_end = origin[bl.start..bl.end.min(origin.len())]
+                .iter()
+                .flatten()
+                .last()
+                .map(|&s| s + 1)
+                .unwrap_or(seg_start);
+            let range = line_break::LineRange {
+                start: seg_start,
+                end: seg_end,
+                width: 0.0,
+            };
+            let text = line_break::line_text(&analysis, &range);
+            let width = prepared.widths[seg_start..seg_end.min(prepared.widths.len())]
+                .iter()
+                .sum();
+            JustifiedLine {
+                text,
+                ratio: bl.ratio,
+                width,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test_utils {
     use super::*;
@@ -636,6 +806,81 @@ mod test_utils {
             .join(" ");
         let original = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert_eq!(combined, original);
+    }
+
+    // --- Knuth-Plass justify-capable wrapping ---
+
+    #[test]
+    fn knuth_plass_empty_text_returns_one_empty_line() {
+        use crate::font::FontStyle;
+        let mut font_config = create_test_font_config();
+        let lines = wrap_text_knuth_plass("", 100.0, &mut font_config, &FontStyle::Regular);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "");
+    }
+
+    #[test]
+    fn knuth_plass_short_text_fits_on_one_line() {
+        use crate::font::FontStyle;
+        let mut font_config = create_test_font_config();
+        let lines =
+            wrap_text_knuth_plass("Short text", 10000.0, &mut font_config, &FontStyle::Regular);
+        assert_eq!(lines.len(), 1, "short text must be a single line");
+        assert_eq!(lines[0].text, "Short text");
+    }
+
+    #[test]
+    fn knuth_plass_long_text_wraps_and_preserves_content() {
+        use crate::font::FontStyle;
+        let mut font_config = create_test_font_config();
+        let original =
+            "The quick brown fox jumps over the lazy dog and then keeps running across the field";
+        let lines = wrap_text_knuth_plass(original, 120.0, &mut font_config, &FontStyle::Regular);
+
+        assert!(lines.len() > 1, "long text must wrap into multiple lines");
+
+        // Every line's ratio must be finite (renderer relies on this).
+        for l in &lines {
+            assert!(l.ratio.is_finite(), "ratio must be finite, got {}", l.ratio);
+        }
+
+        // Content preservation (word sequence), ignoring how spaces were distributed.
+        let combined = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let norm_combined = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+        let norm_original = original.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(norm_combined, norm_original, "no words may be lost");
+    }
+
+    #[test]
+    fn knuth_plass_cjk_wraps_and_preserves_characters() {
+        use crate::font::FontStyle;
+        let mut font_config = create_test_font_config();
+        let original = "当我发现我童年和少年时期的旧日记时它们已经被尘埃所覆盖";
+        let lines = wrap_text_knuth_plass(original, 80.0, &mut font_config, &FontStyle::Regular);
+
+        assert!(lines.len() > 1, "CJK paragraph must wrap");
+
+        // All CJK characters preserved in order.
+        let combined: String = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(
+            combined, original,
+            "CJK characters must be preserved across line breaks"
+        );
+
+        // No line may start with a kinsoku-start punctuation (sanity vs existing rules).
+        for l in &lines {
+            if let Some(first) = l.text.chars().next() {
+                assert!(
+                    first != '。' && first != '，',
+                    "line should not start with CJK punctuation: {:?}",
+                    l.text
+                );
+            }
+        }
     }
 
     // Test the basic functionality without requiring actual fonts

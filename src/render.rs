@@ -17,6 +17,7 @@ use crate::utils::open_file_by_lines;
 use crate::utils::open_file_by_lines_pixel_width;
 use crate::utils::open_file_by_lines_width;
 use crate::utils::wrap_text_by_pixel_width;
+use crate::utils::{wrap_text_knuth_plass, JustifiedLine};
 
 use svg::node::element::{Group, Style};
 use svg::Document;
@@ -31,6 +32,7 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    Justify,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -38,7 +40,10 @@ pub struct ParseTextAlignErr;
 
 impl std::fmt::Display for ParseTextAlignErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid text alignment (expected: left, center, right)")
+        write!(
+            f,
+            "invalid text alignment (expected: left, center, right, justify)"
+        )
     }
 }
 
@@ -50,6 +55,7 @@ impl std::str::FromStr for TextAlign {
             "left" => Ok(TextAlign::Left),
             "center" => Ok(TextAlign::Center),
             "right" => Ok(TextAlign::Right),
+            "justify" => Ok(TextAlign::Justify),
             _ => Err(ParseTextAlignErr),
         }
     }
@@ -61,6 +67,7 @@ impl std::fmt::Display for TextAlign {
             TextAlign::Left => write!(f, "left"),
             TextAlign::Center => write!(f, "center"),
             TextAlign::Right => write!(f, "right"),
+            TextAlign::Justify => write!(f, "justify"),
         }
     }
 }
@@ -72,6 +79,7 @@ pub struct RenderConfig {
     max_width: Option<usize>,
     max_pixel_width: Option<f32>,
     align: TextAlign,
+    justify: bool,
 }
 
 impl RenderConfig {
@@ -82,6 +90,7 @@ impl RenderConfig {
             max_width: None,
             max_pixel_width: None,
             align: TextAlign::Left,
+            justify: false,
         }
     }
 
@@ -97,7 +106,22 @@ impl RenderConfig {
 
     pub fn set_align(&mut self, align: TextAlign) -> &mut Self {
         self.align = align;
+        // Justified alignment requires Knuth-Plass optimal breaking.
+        if align == TextAlign::Justify {
+            self.justify = true;
+        }
         self
+    }
+
+    /// Enable Knuth-Plass optimal line breaking (off by default to preserve
+    /// existing greedy output).
+    pub fn set_justify(&mut self, justify: bool) -> &mut Self {
+        self.justify = justify;
+        self
+    }
+
+    pub fn get_justify(&self) -> bool {
+        self.justify
     }
 
     pub fn get_font_style(&self) -> &FontStyle {
@@ -269,6 +293,115 @@ pub fn render_text_line(
     None
 }
 
+/// Render a single line (anchored at the local origin) with inter-word spaces
+/// expanded by `ratio` (justify).
+fn render_text_line_justified(
+    line: &str,
+    ratio: f32,
+    font_config: &mut FontConfig,
+    render_config: &RenderConfig,
+    glyph_cache: &mut GlyphCache,
+    glyph_defs: &mut GlyphDefs,
+) -> Option<(Group, Rect)> {
+    let style = render_config.get_font_style();
+
+    if let Some(glyph_buffer) = text_shape(line, font_config, style) {
+        let mut svg_builder = TextBuilder::new();
+        svg_builder.set_origin(Point { x: 0.0, y: 0.0 });
+        svg_builder.set_justify_ratio(ratio);
+        return Some(svg_builder.build(font_config, style, &glyph_buffer, glyph_cache, glyph_defs));
+    }
+    None
+}
+
+/// Build an SVG Document from Knuth-Plass justified lines.
+///
+/// Each non-final line's inter-word spaces are stretched by its ratio so the
+/// line fills the target width; the last line of the paragraph stays ragged.
+fn build_multiline_doc_justified(
+    lines: &[JustifiedLine],
+    font_config: &mut FontConfig,
+    render_config: &RenderConfig,
+) -> Option<Document> {
+    let mut max_width: u32 = 0;
+    let mut current_height: u32 = 0;
+    let line_height = font_config.get_size();
+
+    let mut doc = Document::new();
+    let mut glyph_cache: GlyphCache = HashMap::new();
+    let mut glyph_defs: GlyphDefs = HashMap::new();
+    let mut main_group = Group::new()
+        .set("fill", font_config.get_fill_color().as_str())
+        .set("stroke", font_config.get_color().as_str());
+
+    let last_index = lines.len().saturating_sub(1);
+    let mut rendered_lines: Vec<(Group, u32)> = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if line.text.is_empty() {
+            rendered_lines.push((Group::new(), 0));
+            continue;
+        }
+        // Only stretch when the optimizer asked to stretch (ratio > 0) and this
+        // is not the final ragged line.
+        let ratio = if idx == last_index || line.ratio <= 0.0 {
+            0.0
+        } else {
+            line.ratio
+        };
+
+        if let Some((line_group, line_bbox)) = render_text_line_justified(
+            &line.text,
+            ratio,
+            font_config,
+            render_config,
+            &mut glyph_cache,
+            &mut glyph_defs,
+        ) {
+            let line_w = line_bbox.width() as u32;
+            max_width = max_width.max(line_w);
+            rendered_lines.push((line_group, line_w));
+        } else {
+            rendered_lines.push((Group::new(), 0));
+        }
+    }
+
+    for (line_index, (line_content_group, _line_w)) in rendered_lines.into_iter().enumerate() {
+        let line_group_transform = format!("translate({}, {})", 0.0, current_height);
+        let mut positioned_line_group = Group::new()
+            .set("transform", line_group_transform)
+            .add(line_content_group);
+
+        if render_config.get_animate() {
+            let animation_delay = line_index as f32 * 0.8;
+            positioned_line_group = positioned_line_group
+                .set("class", "text-line")
+                .set("style", format!("animation-delay: {}s", animation_delay));
+        }
+
+        main_group = main_group.add(positioned_line_group);
+        current_height += line_height;
+    }
+
+    let mut defs = Definitions::new();
+    for (_id, node_box) in glyph_defs.iter() {
+        defs = defs.add(node_box.clone());
+    }
+    doc = doc.add(defs);
+    doc = doc.add(main_group);
+
+    if render_config.get_animate() {
+        doc = doc.add(get_animation_style());
+    }
+
+    doc = doc
+        .set("height", current_height)
+        .set("width", max_width)
+        .set("viewBox", format!("0 0 {} {}", max_width, current_height));
+
+    Some(doc)
+}
+
 fn get_animation_style() -> Style {
     Style::new(
         "
@@ -330,7 +463,9 @@ fn build_multiline_doc(
     let align = render_config.get_align();
     for (line_index, (line_content_group, line_w)) in rendered_lines.into_iter().enumerate() {
         let x_offset = match align {
-            TextAlign::Left => 0.0,
+            // Justify is rendered by expanding intra-line glue (task #3), so the
+            // line group itself stays left-anchored.
+            TextAlign::Left | TextAlign::Justify => 0.0,
             TextAlign::Center => (max_width as f32 - line_w as f32) / 2.0,
             TextAlign::Right => max_width as f32 - line_w as f32,
         };
@@ -418,6 +553,20 @@ pub fn render_text_to_svg(
 ) -> Option<Document> {
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new();
+
+    // Justified rendering takes a dedicated path: Knuth-Plass breaking plus
+    // per-line glue expansion at render time.
+    if render_config.get_justify() {
+        if let Some(pixel_width) = render_config.max_pixel_width {
+            let justified = wrap_text_knuth_plass(
+                text,
+                pixel_width,
+                font_config,
+                render_config.get_font_style(),
+            );
+            return build_multiline_doc_justified(&justified, font_config, render_config);
+        }
+    }
 
     // Handle text wrapping if pixel width is specified
     let text_lines = if let Some(pixel_width) = render_config.max_pixel_width {

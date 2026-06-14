@@ -64,6 +64,10 @@ impl Default for PathConfig {
 pub struct TextBuilder {
     pub origin: Point, // Top-left origin for the start of the text block
     pub path_config: PathConfig,
+    /// Knuth-Plass glue adjustment ratio for justification. Extra advance added
+    /// after each space-like glyph is `justify_ratio * space_advance * 0.5`
+    /// (0.5 matches the per-space stretch fraction used during line breaking).
+    justify_ratio: f32,
 }
 
 impl Default for TextBuilder {
@@ -71,6 +75,7 @@ impl Default for TextBuilder {
         Self {
             origin: Point { x: 0.0, y: 0.0 },
             path_config: PathConfig::default(),
+            justify_ratio: 0.0,
         }
     }
 }
@@ -82,6 +87,12 @@ impl TextBuilder {
 
     pub fn set_origin(&mut self, o: Point) -> &mut Self {
         self.origin = o;
+        self
+    }
+
+    /// Set the justification ratio applied to inter-word spaces on this line.
+    pub fn set_justify_ratio(&mut self, ratio: f32) -> &mut Self {
+        self.justify_ratio = ratio;
         self
     }
 
@@ -221,6 +232,11 @@ impl TextBuilder {
                 && glyph_pos.x_advance > 0
             {
                 prev_space_glyph = true; // It's likely a space, don't add letter-spacing before next char
+
+                // Justification: widen this inter-word space by the line's ratio.
+                if self.justify_ratio != 0.0 {
+                    current_x += self.justify_ratio * advance_width * 0.5;
+                }
             }
         }
 
@@ -337,4 +353,67 @@ impl ttf_parser::OutlineBuilder for NullOutlineBuilder {
     fn quad_to(&mut self, _x1: f32, _y1: f32, _x: f32, _y: f32) {}
     fn curve_to(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _x: f32, _y: f32) {}
     fn close(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::font::fonts;
+
+    fn create_test_font_config() -> FontConfig {
+        let available = fonts();
+        let name = available
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Arial".to_string());
+        FontConfig::new(name, 32, "#000".to_string(), "#000".to_string(), false)
+            .expect("font config")
+    }
+
+    fn shape(text: &str, fc: &FontConfig) -> GlyphBuffer {
+        let face = fc
+            .get_font_by_style(&FontStyle::Regular)
+            .expect("regular face");
+        let data = face.copy_font_data().expect("font data");
+        let hb = Face::from_slice(&data, 0).expect("hb face");
+        let mut buf = rustybuzz::UnicodeBuffer::new();
+        buf.push_str(text);
+        rustybuzz::shape(&hb, &[], buf)
+    }
+
+    fn line_width(text: &str, ratio: f32, fc: &FontConfig) -> i16 {
+        let glyphs = shape(text, fc);
+        let mut cache: GlyphCache = HashMap::new();
+        let mut defs: GlyphDefs = HashMap::new();
+        let mut builder = TextBuilder::new();
+        builder.set_justify_ratio(ratio);
+        let (_g, bbox) = builder.build(fc, &FontStyle::Regular, &glyphs, &mut cache, &mut defs);
+        bbox.width()
+    }
+
+    #[test]
+    fn justify_ratio_widens_lines_with_spaces() {
+        let fc = create_test_font_config();
+        let text = "hello world from text2svg";
+        let natural = line_width(text, 0.0, &fc);
+        let justified = line_width(text, 2.0, &fc);
+        assert!(
+            justified > natural,
+            "positive justify ratio must widen a line containing spaces: natural={}, justified={}",
+            natural,
+            justified
+        );
+    }
+
+    #[test]
+    fn justify_ratio_does_not_affect_line_without_spaces() {
+        let fc = create_test_font_config();
+        let text = "singleword";
+        let natural = line_width(text, 0.0, &fc);
+        let justified = line_width(text, 2.0, &fc);
+        assert_eq!(
+            natural, justified,
+            "a line with no inter-word spaces must not change width under justify"
+        );
+    }
 }

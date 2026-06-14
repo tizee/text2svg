@@ -138,7 +138,8 @@ struct Args {
     #[arg(long)]
     list_theme: bool,
 
-    /// Text alignment for multi-line output (left, center, right)
+    /// Text alignment for multi-line output (left, center, right, justify).
+    /// `justify` enables Knuth-Plass optimal line breaking.
     #[arg(value_enum, long, default_value = "left")]
     align: Option<TextAlign>,
 
