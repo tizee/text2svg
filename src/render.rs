@@ -309,6 +309,7 @@ fn render_text_line_justified(
         let mut svg_builder = TextBuilder::new();
         svg_builder.set_origin(Point { x: 0.0, y: 0.0 });
         svg_builder.set_justify_ratio(ratio);
+        svg_builder.set_justify_text(line);
         return Some(svg_builder.build(font_config, style, &glyph_buffer, glyph_cache, glyph_defs));
     }
     None

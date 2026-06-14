@@ -381,9 +381,38 @@ pub struct JustifiedLine {
 ///
 /// Returns the item list plus, for each item, the index of the segment it came
 /// from (None for synthetic break penalties).
+/// Latin letter or digit (the "Latin/digit" side of CSS text-autospace).
+fn is_latin_alnum(ch: char) -> bool {
+    ch.is_alphanumeric() && !text_analysis::is_cjk(ch)
+}
+
+/// True when the boundary between `seg` and `next` is a CJK<->Latin/digit
+/// boundary (in either direction), i.e. where text-autospace applies.
+fn is_cjk_latin_boundary(
+    seg: &text_analysis::Segment,
+    next: Option<&text_analysis::Segment>,
+) -> bool {
+    let next = match next {
+        Some(n) if n.kind == SegmentKind::Text => n,
+        _ => return false,
+    };
+    let last = match seg.text.chars().last() {
+        Some(c) => c,
+        None => return false,
+    };
+    let first = match next.text.chars().next() {
+        Some(c) => c,
+        None => return false,
+    };
+    let a_cjk = text_analysis::is_cjk(last);
+    let b_cjk = text_analysis::is_cjk(first);
+    (a_cjk && is_latin_alnum(first)) || (b_cjk && is_latin_alnum(last))
+}
+
 fn segments_to_items(
     analysis: &text_analysis::TextAnalysis,
     widths: &[f32],
+    em: f32,
 ) -> (Vec<Item>, Vec<Option<usize>>) {
     let segments = &analysis.segments;
     let mut items: Vec<Item> = Vec::new();
@@ -397,11 +426,25 @@ fn segments_to_items(
                 origin.push(Some(i));
                 // Insert a synthetic break opportunity after CJK characters.
                 if seg.break_after {
-                    items.push(Item::Penalty {
-                        width: 0.0,
-                        penalty: 0.0,
-                        flagged: false,
-                    });
+                    let next = segments.get(i + 1);
+                    if is_cjk_latin_boundary(seg, next) {
+                        // CSS text-autospace: CJK<->Latin/digit boundary gets a
+                        // small natural-width gap (0.25em) plus a little stretch.
+                        items.push(Item::Glue {
+                            width: 0.25 * em,
+                            stretch: 0.05 * em,
+                            shrink: 0.0,
+                        });
+                    } else {
+                        // CJK<->CJK: zero-width *stretchable* micro-glue so the
+                        // optimizer can distribute slack across ideographs for
+                        // full justification.
+                        items.push(Item::Glue {
+                            width: 0.0,
+                            stretch: w * 0.5,
+                            shrink: 0.0,
+                        });
+                    }
                     origin.push(None);
                 }
             }
@@ -470,9 +513,10 @@ pub fn wrap_text_knuth_plass(
         }];
     }
 
+    let em = font_config.get_size() as f32;
     let analysis = text_analysis::analyze(text);
     let prepared = prepare_segments(&analysis, font_config, font_style);
-    let (items, origin) = segments_to_items(&analysis, &prepared.widths);
+    let (items, origin) = segments_to_items(&analysis, &prepared.widths, em);
 
     if items.is_empty() {
         return vec![JustifiedLine {
@@ -881,6 +925,96 @@ mod test_utils {
                 );
             }
         }
+    }
+
+    // Font-independent: build items from an analysis with uniform widths.
+    fn items_from_uniform(text: &str, w: f32) -> Vec<Item> {
+        items_from_uniform_em(text, w, 0.0)
+    }
+
+    fn items_from_uniform_em(text: &str, w: f32, em: f32) -> Vec<Item> {
+        let analysis = text_analysis::analyze(text);
+        let widths: Vec<f32> = analysis
+            .segments
+            .iter()
+            .map(|s| match s.kind {
+                SegmentKind::Text | SegmentKind::Space => s.text.chars().count() as f32 * w,
+                _ => 0.0,
+            })
+            .collect();
+        let (items, _origin) = segments_to_items(&analysis, &widths, em);
+        items
+    }
+
+    #[test]
+    fn cjk_latin_boundary_inserts_autospace_glue() {
+        // CSS text-autospace: a CJK<->Latin boundary gets ~0.25em natural-width
+        // glue. With em=40, expect a glue with width ~= 10 between the boxes.
+        let em = 40.0;
+        let items = items_from_uniform_em("中a", 10.0, em);
+        let expected = 0.25 * em;
+        let has_autospace = items
+            .iter()
+            .any(|it| matches!(it, Item::Glue { width, .. } if (*width - expected).abs() < 1e-3));
+        assert!(
+            has_autospace,
+            "expected ~{}px autospace glue at CJK/Latin boundary, got: {:?}",
+            expected, items
+        );
+    }
+
+    #[test]
+    fn latin_to_cjk_boundary_also_inserts_autospace() {
+        let em = 40.0;
+        let items = items_from_uniform_em("a中", 10.0, em);
+        let expected = 0.25 * em;
+        let has_autospace = items
+            .iter()
+            .any(|it| matches!(it, Item::Glue { width, .. } if (*width - expected).abs() < 1e-3));
+        assert!(
+            has_autospace,
+            "expected autospace glue at Latin/CJK boundary, got: {:?}",
+            items
+        );
+    }
+
+    #[test]
+    fn no_autospace_between_two_cjk_chars() {
+        let em = 40.0;
+        let items = items_from_uniform_em("中文", 10.0, em);
+        let expected = 0.25 * em;
+        let has_autospace = items
+            .iter()
+            .any(|it| matches!(it, Item::Glue { width, .. } if (*width - expected).abs() < 1e-3));
+        assert!(
+            !has_autospace,
+            "CJK<->CJK must use zero-width micro-glue, not autospace: {:?}",
+            items
+        );
+    }
+
+    #[test]
+    fn cjk_boundary_is_stretchable_glue_not_rigid_penalty() {
+        // Between two CJK boxes there must be a stretchable Glue (the pattern
+        // Box, Glue{width:0, stretch>0}, Box) so the optimizer can distribute
+        // slack for justification. The trailing paragraph terminator glue is
+        // excluded by requiring a Box immediately after the glue.
+        let items = items_from_uniform("天地", 10.0);
+        let mut found = false;
+        for w in items.windows(3) {
+            if matches!(w[0], Item::Box { .. })
+                && matches!(w[1], Item::Glue { width, stretch, .. } if width == 0.0 && stretch > 0.0)
+                && matches!(w[2], Item::Box { .. })
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected Box,micro-Glue(stretch>0,width0),Box between CJK chars, got: {:?}",
+            items
+        );
     }
 
     // Test the basic functionality without requiring actual fonts

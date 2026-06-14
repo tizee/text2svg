@@ -68,6 +68,9 @@ pub struct TextBuilder {
     /// after each space-like glyph is `justify_ratio * space_advance * 0.5`
     /// (0.5 matches the per-space stretch fraction used during line breaking).
     justify_ratio: f32,
+    /// Source text of the line, used to map glyph clusters back to characters so
+    /// inter-ideograph (CJK) gaps can be stretched for justification.
+    justify_text: Option<String>,
 }
 
 impl Default for TextBuilder {
@@ -76,6 +79,7 @@ impl Default for TextBuilder {
             origin: Point { x: 0.0, y: 0.0 },
             path_config: PathConfig::default(),
             justify_ratio: 0.0,
+            justify_text: None,
         }
     }
 }
@@ -94,6 +98,39 @@ impl TextBuilder {
     pub fn set_justify_ratio(&mut self, ratio: f32) -> &mut Self {
         self.justify_ratio = ratio;
         self
+    }
+
+    /// Provide the line's source text so CJK ideograph boundaries can be
+    /// stretched during justification.
+    pub fn set_justify_text(&mut self, text: &str) -> &mut Self {
+        self.justify_text = Some(text.to_string());
+        self
+    }
+
+    /// The character at byte offset `cluster` in the justify text, if any.
+    fn char_at_cluster(&self, cluster: u32) -> Option<char> {
+        self.justify_text
+            .as_ref()
+            .and_then(|t| t.get(cluster as usize..))
+            .and_then(|s| s.chars().next())
+    }
+
+    /// Whether the character at byte offset `cluster` in the justify text is CJK.
+    fn cluster_is_cjk(&self, cluster: u32) -> bool {
+        self.char_at_cluster(cluster)
+            .is_some_and(crate::text_analysis::is_cjk)
+    }
+
+    /// Whether the boundary between two clusters is a CJK<->Latin/digit boundary
+    /// (CSS text-autospace).
+    fn is_cjk_latin_boundary(&self, a: u32, b: u32) -> bool {
+        let (ca, cb) = match (self.char_at_cluster(a), self.char_at_cluster(b)) {
+            (Some(ca), Some(cb)) => (ca, cb),
+            _ => return false,
+        };
+        let is_latin_alnum = |c: char| c.is_alphanumeric() && !crate::text_analysis::is_cjk(c);
+        (crate::text_analysis::is_cjk(ca) && is_latin_alnum(cb))
+            || (crate::text_analysis::is_cjk(cb) && is_latin_alnum(ca))
     }
 
     // Removed set_color and set_fill_color, as these are applied later
@@ -226,16 +263,33 @@ impl TextBuilder {
             current_x += advance_width;
 
             // Check if glyph looks like whitespace (no outline, has advance)
-            if hb_face
+            let is_space_like = hb_face
                 .outline_glyph(GlyphId(glyph_id_u16), &mut NullOutlineBuilder)
                 .is_none()
-                && glyph_pos.x_advance > 0
-            {
+                && glyph_pos.x_advance > 0;
+
+            if is_space_like {
                 prev_space_glyph = true; // It's likely a space, don't add letter-spacing before next char
 
                 // Justification: widen this inter-word space by the line's ratio.
                 if self.justify_ratio != 0.0 {
                     current_x += self.justify_ratio * advance_width * 0.5;
+                }
+            } else if self.justify_ratio != 0.0 && self.cluster_is_cjk(glyph_infos[i].cluster) {
+                // CJK micro-glue: widen the gap after an ideograph so CJK lines
+                // (which have no space glyphs) can also be justified. Mirrors the
+                // `width * 0.5` micro-glue stretch used during line breaking.
+                current_x += self.justify_ratio * advance_width * 0.5;
+            }
+
+            // CSS text-autospace: add a fixed 0.25em gap at CJK<->Latin/digit
+            // boundaries (independent of justify stretch). Only on the justify
+            // path, where wrapping already accounted for this gap.
+            if self.justify_text.is_some() && i + 1 < glyph_num {
+                let this_cluster = glyph_infos[i].cluster;
+                let next_cluster = glyph_infos[i + 1].cluster;
+                if self.is_cjk_latin_boundary(this_cluster, next_cluster) {
+                    current_x += 0.25 * target_glyph_height;
                 }
             }
         }
@@ -381,12 +435,39 @@ mod tests {
         rustybuzz::shape(&hb, &[], buf)
     }
 
+    // Width with autospace disabled (no justify_text set).
+    fn line_width_no_autospace(text: &str, fc: &FontConfig) -> i16 {
+        let glyphs = shape(text, fc);
+        let mut cache: GlyphCache = HashMap::new();
+        let mut defs: GlyphDefs = HashMap::new();
+        let builder = TextBuilder::new();
+        let (_g, bbox) = builder.build(fc, &FontStyle::Regular, &glyphs, &mut cache, &mut defs);
+        bbox.width()
+    }
+
+    #[test]
+    fn autospace_widens_cjk_latin_line() {
+        // With justify_text set (justify path), a CJK<->Latin boundary inserts a
+        // visible 0.25em gap, so the rendered line is wider than without it.
+        let fc = create_test_font_config();
+        let text = "中a中";
+        let with_autospace = line_width(text, 0.0, &fc); // helper sets justify_text
+        let without = line_width_no_autospace(text, &fc);
+        assert!(
+            with_autospace > without,
+            "autospace must widen a CJK/Latin line: with={}, without={}",
+            with_autospace,
+            without
+        );
+    }
+
     fn line_width(text: &str, ratio: f32, fc: &FontConfig) -> i16 {
         let glyphs = shape(text, fc);
         let mut cache: GlyphCache = HashMap::new();
         let mut defs: GlyphDefs = HashMap::new();
         let mut builder = TextBuilder::new();
         builder.set_justify_ratio(ratio);
+        builder.set_justify_text(text);
         let (_g, bbox) = builder.build(fc, &FontStyle::Regular, &glyphs, &mut cache, &mut defs);
         bbox.width()
     }
@@ -400,6 +481,22 @@ mod tests {
         assert!(
             justified > natural,
             "positive justify ratio must widen a line containing spaces: natural={}, justified={}",
+            natural,
+            justified
+        );
+    }
+
+    #[test]
+    fn justify_ratio_widens_cjk_line_without_spaces() {
+        // CJK lines have no inter-word space glyphs, but justification must still
+        // widen them by distributing slack between ideographs (micro-glue render).
+        let fc = create_test_font_config();
+        let text = "天地玄黄宇宙洪荒";
+        let natural = line_width(text, 0.0, &fc);
+        let justified = line_width(text, 2.0, &fc);
+        assert!(
+            justified > natural,
+            "positive justify ratio must widen a CJK line: natural={}, justified={}",
             natural,
             justified
         );

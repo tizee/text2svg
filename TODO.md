@@ -15,5 +15,5 @@
     - [ ] load themes from folder
   - [ ] Line highlight
   - [x] render highlight
-- [ ] Export as a lib
+- [x] Export as a lib
 - [x] max width
