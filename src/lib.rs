@@ -1,5 +1,6 @@
 pub mod font;
 pub mod highlight;
+pub mod hyphenate;
 pub mod knuth_plass;
 pub mod line_break;
 pub mod render;

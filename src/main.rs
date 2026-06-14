@@ -143,6 +143,10 @@ struct Args {
     #[arg(value_enum, long, default_value = "left")]
     align: Option<TextAlign>,
 
+    /// Disable dictionary hyphenation (only affects justified output).
+    #[arg(long)]
+    no_hyphen: bool,
+
     /// Enable debug logging
     #[arg(short, long)]
     debug: bool,
@@ -301,6 +305,7 @@ fn run() -> Result<(), CliError> {
     render_config.set_max_width(args.width);
     render_config.set_max_pixel_width(args.pixel_width);
     render_config.set_align(args.align.unwrap_or(TextAlign::Left));
+    render_config.set_hyphenate(!args.no_hyphen);
 
     // --- Rendering Logic ---
     if let Some(text) = input_text {

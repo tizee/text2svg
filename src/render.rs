@@ -80,6 +80,7 @@ pub struct RenderConfig {
     max_pixel_width: Option<f32>,
     align: TextAlign,
     justify: bool,
+    hyphenate: bool,
 }
 
 impl RenderConfig {
@@ -91,6 +92,9 @@ impl RenderConfig {
             max_pixel_width: None,
             align: TextAlign::Left,
             justify: false,
+            // Hyphenation helps justified paragraphs; on by default and only
+            // takes effect on the justify path.
+            hyphenate: true,
         }
     }
 
@@ -122,6 +126,16 @@ impl RenderConfig {
 
     pub fn get_justify(&self) -> bool {
         self.justify
+    }
+
+    /// Enable/disable dictionary hyphenation (only effective on the justify path).
+    pub fn set_hyphenate(&mut self, hyphenate: bool) -> &mut Self {
+        self.hyphenate = hyphenate;
+        self
+    }
+
+    pub fn get_hyphenate(&self) -> bool {
+        self.hyphenate
     }
 
     pub fn get_font_style(&self) -> &FontStyle {
@@ -564,6 +578,7 @@ pub fn render_text_to_svg(
                 pixel_width,
                 font_config,
                 render_config.get_font_style(),
+                render_config.get_hyphenate(),
             );
             return build_multiline_doc_justified(&justified, font_config, render_config);
         }

@@ -1,5 +1,6 @@
 // some useful utility functions
 use crate::font::{FontConfig, FontStyle};
+use crate::hyphenate::Hyphenator;
 use crate::knuth_plass::{self, Item};
 use crate::line_break::{self, PreparedLineBreak};
 use crate::text_analysis::{self, SegmentKind};
@@ -9,6 +10,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::iter::Iterator;
 use std::path::Path;
+use unicode_segmentation::UnicodeSegmentation;
 
 // Reads file line by line, splitting lines longer than `max_chars_per_line`.
 // Tries to wrap at whitespace for ASCII text.
@@ -381,6 +383,37 @@ pub struct JustifiedLine {
 ///
 /// Returns the item list plus, for each item, the index of the segment it came
 /// from (None for synthetic break penalties).
+/// Insert soft hyphens (U+00AD) into hyphenatable words using the dictionary.
+///
+/// The result feeds the normal analysis pipeline, where each soft hyphen becomes
+/// a flagged break the optimizer may use. Words that already contain a soft
+/// hyphen are left untouched (author intent wins).
+pub fn apply_hyphenation(text: &str, hyphenator: &Hyphenator) -> String {
+    let mut out = String::with_capacity(text.len());
+    for token in text.split_word_bounds() {
+        // Only hyphenate pure-alphabetic word tokens without existing soft hyphens.
+        if token.contains('\u{00AD}') || !token.chars().all(|c| c.is_alphabetic()) {
+            out.push_str(token);
+            continue;
+        }
+        let breaks = hyphenator.break_indices(token);
+        if breaks.is_empty() {
+            out.push_str(token);
+            continue;
+        }
+        // breaks are character indices; insert U+00AD at each.
+        let mut next_break = 0usize;
+        for (ci, ch) in token.chars().enumerate() {
+            if next_break < breaks.len() && breaks[next_break] == ci && ci != 0 {
+                out.push('\u{00AD}');
+                next_break += 1;
+            }
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Latin letter or digit (the "Latin/digit" side of CSS text-autospace).
 fn is_latin_alnum(ch: char) -> bool {
     ch.is_alphanumeric() && !text_analysis::is_cjk(ch)
@@ -457,11 +490,21 @@ fn segments_to_items(
                 });
                 origin.push(Some(i));
             }
-            SegmentKind::ZeroWidthBreak | SegmentKind::SoftHyphen => {
+            SegmentKind::ZeroWidthBreak => {
                 items.push(Item::Penalty {
                     width: 0.0,
                     penalty: 0.0,
-                    flagged: seg.kind == SegmentKind::SoftHyphen,
+                    flagged: false,
+                });
+                origin.push(Some(i));
+            }
+            SegmentKind::SoftHyphen => {
+                // A hyphenation point: a flagged break with a cost so the
+                // optimizer only hyphenates when it improves the paragraph.
+                items.push(Item::Penalty {
+                    width: 0.0,
+                    penalty: 50.0,
+                    flagged: true,
                 });
                 origin.push(Some(i));
             }
@@ -504,6 +547,7 @@ pub fn wrap_text_knuth_plass(
     max_pixel_width: f32,
     font_config: &mut FontConfig,
     font_style: &FontStyle,
+    hyphenate: bool,
 ) -> Vec<JustifiedLine> {
     if text.is_empty() {
         return vec![JustifiedLine {
@@ -512,6 +556,19 @@ pub fn wrap_text_knuth_plass(
             width: 0.0,
         }];
     }
+
+    // Optionally insert dictionary soft hyphens before analysis.
+    let hyphenated;
+    let text = if hyphenate {
+        if let Some(h) = Hyphenator::english_us() {
+            hyphenated = apply_hyphenation(text, &h);
+            hyphenated.as_str()
+        } else {
+            text
+        }
+    } else {
+        text
+    };
 
     let em = font_config.get_size() as f32;
     let analysis = text_analysis::analyze(text);
@@ -547,12 +604,19 @@ pub fn wrap_text_knuth_plass(
                     origin[bl.start..].iter().flatten().next().copied()
                 })
                 .unwrap_or(0);
-            let seg_end = origin[bl.start..bl.end.min(origin.len())]
+            let mut seg_end = origin[bl.start..bl.end.min(origin.len())]
                 .iter()
                 .flatten()
                 .last()
                 .map(|&s| s + 1)
                 .unwrap_or(seg_start);
+            // If the line ends at a flagged hyphenation penalty, include that
+            // soft-hyphen segment so line_text emits the trailing '-'.
+            if let Some(Item::Penalty { flagged: true, .. }) = items.get(bl.end) {
+                if let Some(Some(shy_seg)) = origin.get(bl.end) {
+                    seg_end = seg_end.max(shy_seg + 1);
+                }
+            }
             let range = line_break::LineRange {
                 start: seg_start,
                 end: seg_end,
@@ -858,7 +922,7 @@ mod test_utils {
     fn knuth_plass_empty_text_returns_one_empty_line() {
         use crate::font::FontStyle;
         let mut font_config = create_test_font_config();
-        let lines = wrap_text_knuth_plass("", 100.0, &mut font_config, &FontStyle::Regular);
+        let lines = wrap_text_knuth_plass("", 100.0, &mut font_config, &FontStyle::Regular, false);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "");
     }
@@ -867,8 +931,13 @@ mod test_utils {
     fn knuth_plass_short_text_fits_on_one_line() {
         use crate::font::FontStyle;
         let mut font_config = create_test_font_config();
-        let lines =
-            wrap_text_knuth_plass("Short text", 10000.0, &mut font_config, &FontStyle::Regular);
+        let lines = wrap_text_knuth_plass(
+            "Short text",
+            10000.0,
+            &mut font_config,
+            &FontStyle::Regular,
+            false,
+        );
         assert_eq!(lines.len(), 1, "short text must be a single line");
         assert_eq!(lines[0].text, "Short text");
     }
@@ -879,7 +948,13 @@ mod test_utils {
         let mut font_config = create_test_font_config();
         let original =
             "The quick brown fox jumps over the lazy dog and then keeps running across the field";
-        let lines = wrap_text_knuth_plass(original, 120.0, &mut font_config, &FontStyle::Regular);
+        let lines = wrap_text_knuth_plass(
+            original,
+            120.0,
+            &mut font_config,
+            &FontStyle::Regular,
+            false,
+        );
 
         assert!(lines.len() > 1, "long text must wrap into multiple lines");
 
@@ -904,7 +979,8 @@ mod test_utils {
         use crate::font::FontStyle;
         let mut font_config = create_test_font_config();
         let original = "当我发现我童年和少年时期的旧日记时它们已经被尘埃所覆盖";
-        let lines = wrap_text_knuth_plass(original, 80.0, &mut font_config, &FontStyle::Regular);
+        let lines =
+            wrap_text_knuth_plass(original, 80.0, &mut font_config, &FontStyle::Regular, false);
 
         assert!(lines.len() > 1, "CJK paragraph must wrap");
 
@@ -944,6 +1020,63 @@ mod test_utils {
             .collect();
         let (items, _origin) = segments_to_items(&analysis, &widths, em);
         items
+    }
+
+    #[test]
+    fn apply_hyphenation_inserts_soft_hyphens_in_long_words() {
+        let h = Hyphenator::english_us().expect("dict");
+        let out = apply_hyphenation("hyphenation", &h);
+        assert!(
+            out.contains('\u{00AD}'),
+            "long word should get soft hyphens: {:?}",
+            out
+        );
+        // Removing the soft hyphens must restore the original word.
+        let stripped: String = out.chars().filter(|c| *c != '\u{00AD}').collect();
+        assert_eq!(stripped, "hyphenation");
+    }
+
+    #[test]
+    fn apply_hyphenation_leaves_short_words_and_punctuation() {
+        let h = Hyphenator::english_us().expect("dict");
+        let out = apply_hyphenation("a cat, ok.", &h);
+        assert_eq!(out, "a cat, ok.", "short words/punctuation unchanged");
+    }
+
+    #[test]
+    fn hyphenated_justify_breaks_a_long_word_with_dash() {
+        use crate::font::FontStyle;
+        let mut font_config = create_test_font_config();
+        // A single very long word in a narrow column: with hyphenation enabled,
+        // it should break across lines with a trailing hyphen rather than
+        // overflow as one piece.
+        let text = "antidisestablishmentarianism";
+        let lines = wrap_text_knuth_plass(text, 80.0, &mut font_config, &FontStyle::Regular, true);
+        assert!(
+            lines.len() > 1,
+            "long word in narrow column should break, got {} line(s)",
+            lines.len()
+        );
+        let any_dash = lines
+            .iter()
+            .take(lines.len() - 1)
+            .any(|l| l.text.ends_with('-'));
+        assert!(
+            any_dash,
+            "a hyphenated break should end a line with '-': {:?}",
+            lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
+        );
+        // Content preserved (dashes are inserted hyphens, strip them).
+        let joined: String = lines.iter().map(|l| l.text.replace('-', "")).collect();
+        assert_eq!(joined, text, "hyphenation must not lose characters");
+    }
+
+    #[test]
+    fn apply_hyphenation_preserves_author_soft_hyphens() {
+        let h = Hyphenator::english_us().expect("dict");
+        let input = "ri\u{00AD}bonuclease";
+        let out = apply_hyphenation(input, &h);
+        assert_eq!(out, input, "words with existing soft hyphens are untouched");
     }
 
     #[test]

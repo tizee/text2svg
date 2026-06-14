@@ -22,6 +22,7 @@ cli = ["dep:clap"]
 anyhow = "1.0.72"
 clap = { version = "4.3.19", features = ["derive"], optional = true }
 font-kit = "0.14.2"
+hyphenation = { version = "0.8.4", default-features = false, features = ["embed_en-us"] }
 resvg = "0.45.0"
 rustybuzz = "0.20.1"
 svg = "0.18.0"
