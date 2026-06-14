@@ -1,6 +1,6 @@
 # text2svg
 
-Convert text to SVG with font shaping, syntax highlighting, and animation support.
+Convert text to SVG with font shaping, advanced typography (Knuth-Plass justification, hyphenation, CJK micro-spacing), syntax highlighting, and animation support.
 
 Works both as a **CLI tool** and as a **reusable Rust library**.
 
@@ -26,7 +26,7 @@ Add to your `Cargo.toml` with default features disabled to avoid pulling in CLI 
 
 ```toml
 [dependencies]
-text2svg = { version = "0.3.0", default-features = false }
+text2svg = { version = "0.4", default-features = false }
 ```
 
 ## Library Usage
@@ -57,6 +57,20 @@ text2svg::render::render_text_to_svg_file(
     PathBuf::from("output.svg"),
 );
 
+// Justified paragraph with optimal (Knuth-Plass) line breaking.
+// Setting a pixel width is required; TextAlign::Justify enables the optimizer,
+// dictionary hyphenation (English), CJK micro-spacing and CJK<->Latin autospace.
+let mut justified = RenderConfig::new(false, FontStyle::Regular);
+justified.set_max_pixel_width(Some(400.0));
+justified.set_align(TextAlign::Justify); // auto-enables Knuth-Plass + hyphenation
+// justified.set_hyphenate(false);       // optional: turn hyphenation off
+text2svg::render::render_text_to_svg_file(
+    "A long paragraph that will be justified across the column width...",
+    &mut font_config,
+    &justified,
+    PathBuf::from("justified.svg"),
+);
+
 // Render a file with syntax highlighting
 let highlight_setting = HighlightSetting::default();
 text2svg::render::render_file_highlight(
@@ -75,9 +89,11 @@ text2svg::render::render_file_highlight(
 | `text2svg::render` | SVG rendering for plain text and syntax-highlighted files |
 | `text2svg::highlight` | Syntax highlighting settings (themes, syntax sets) |
 | `text2svg::svg` | Low-level SVG glyph path building and caching |
-| `text2svg::utils` | Text wrapping utilities (character-based and pixel-based) |
-| `text2svg::text_analysis` | Unicode-aware text segmentation with CJK support |
-| `text2svg::line_break` | Line breaking algorithm with kinsoku rules |
+| `text2svg::utils` | Text wrapping utilities (greedy and Knuth-Plass), hyphenation pre-pass |
+| `text2svg::text_analysis` | Unicode-aware segmentation: CJK, kinsoku, UAX #14 break opportunities |
+| `text2svg::line_break` | Greedy line breaking with kinsoku rules |
+| `text2svg::knuth_plass` | Knuth-Plass optimal line breaking (Box/Glue/Penalty model) |
+| `text2svg::hyphenate` | Dictionary hyphenation (embedded English patterns) |
 
 ## CLI Usage
 
@@ -104,7 +120,8 @@ Options:
       --theme <THEME>              Syntax highlighting theme name or path to .tmTheme file [default: base16-ocean.dark]
       --list-syntax                List supported file types/syntax for highlighting
       --list-theme                 List available built-in highlighting themes
-      --align <ALIGN>              Text alignment for multi-line output [default: left] [possible values: left, center, right]
+      --align <ALIGN>              Text alignment for multi-line output [default: left] [possible values: left, center, right, justify]
+      --no-hyphen                  Disable dictionary hyphenation (only affects justified output)
   -d, --debug                      Enable debug logging
       --list-fonts                 List installed font families
   -h, --help                       Print help
@@ -133,13 +150,59 @@ Text wrapping by pixel width:
 text2svg "Long text that needs wrapping" --pixel-width 300 --font "Arial" --output wrapped.svg
 ```
 
+Justified paragraph (optimal line breaking + hyphenation):
+```bash
+text2svg "The quick brown fox jumps over the lazy dog and keeps running" \
+  --font "Times New Roman" --size 48 --pixel-width 400 --align justify -o justified.svg
+```
+
+Justified, hyphenation disabled:
+```bash
+text2svg "antidisestablishmentarianism is a long word" \
+  --font "Arial" --pixel-width 200 --align justify --no-hyphen -o no-hyphen.svg
+```
+
+Justified CJK / mixed CJK + Latin:
+```bash
+text2svg "使用text2svg渲染CJK和Latin混排2026年效果对比" \
+  --font "Arial Unicode MS" --size 40 --pixel-width 260 --align justify -o mixed.svg
+```
+
+## Advanced Typography
+
+text2svg includes a TeX-style typesetting path for high-quality paragraphs.
+**All of the features below are enabled by `--align justify` together with
+`--pixel-width <N>`** (a column width is required). Other alignments
+(`left`/`center`/`right`) use the simpler greedy wrapper and are unaffected.
+
+| Feature | What it does | How to use |
+|---------|--------------|------------|
+| **Knuth-Plass line breaking** | Globally optimal break points that minimize raggedness, instead of greedy first-fit | `--align justify --pixel-width N` |
+| **Justification** | Stretches inter-word spaces so each line fills the column; the last line stays ragged | enabled by `--align justify` |
+| **Hyphenation** | Breaks long English words at dictionary points and appends a `-` | on by default with justify; disable with `--no-hyphen` |
+| **CJK micro-spacing** | Distributes slack between ideographs so CJK lines justify without visible spaces | automatic for CJK under justify |
+| **CJK <-> Latin autospace** | Inserts ~0.25em spacing at CJK/Latin or CJK/digit boundaries (CSS `text-autospace`) | automatic under justify |
+| **Kinsoku rules** | Prevents prohibited punctuation at line start/end (CJK) | always on |
+| **UAX #14 break opportunities** | Allows breaks after `/`, `-` in compounds, and other Unicode-defined points | always on |
+
+Notes:
+
+- `--pixel-width` is **required** for justification. Without a column width the
+  optimizer has no target and the text renders as a single line.
+- Hyphenation uses an embedded English (US) dictionary and only takes effect on
+  the justify path.
+- Under justify, the reported SVG `width`/`viewBox` may be slightly larger than
+  `--pixel-width` (the bounding box uses advance-width estimation); glyph
+  positions within the column are correct.
+
 ## Features
 
 - **Text to SVG Conversion** -- Convert plain text or files to SVG using real font shaping (rustybuzz/HarfBuzz)
 - **Font Customization** -- Font families, sizes, styles, OpenType features, and letter spacing
+- **Advanced Typography** -- Knuth-Plass optimal line breaking, full justification, dictionary hyphenation, CJK micro-spacing, and CJK<->Latin autospace (via `--align justify`)
 - **Syntax Highlighting** -- Built-in syntax highlighting for code files via syntect
 - **Animation Effects** -- Progressive line-by-line drawing animation via SVG stroke-dasharray
-- **Text Wrapping** -- Character-based and pixel-based line wrapping with Unicode-aware segmentation
+- **Text Wrapping** -- Greedy and Knuth-Plass line wrapping with Unicode-aware (UAX #14) segmentation
 - **CJK Support** -- Proper CJK line breaking with kinsoku rules
 
 ## Cargo Features
@@ -151,6 +214,6 @@ text2svg "Long text that needs wrapping" --pixel-width 300 --font "Arial" --outp
 To use as a library without CLI dependencies:
 
 ```toml
-text2svg = { version = "0.3.0", default-features = false }
+text2svg = { version = "0.4", default-features = false }
 ```
 

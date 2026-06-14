@@ -27,6 +27,7 @@ resvg = "0.45.0"
 rustybuzz = "0.20.1"
 svg = "0.18.0"
 syntect = "5.1.0"
+unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.11"
 
 [[bin]]

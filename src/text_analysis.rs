@@ -430,20 +430,43 @@ fn merge_left_sticky(segments: Vec<Segment>) -> Vec<Segment> {
 }
 
 /// Phase 5: Set break_after flags on segments.
+///
+/// Break opportunities come from the Unicode Line Breaking Algorithm (UAX #14,
+/// via `unicode-linebreak`), augmented by the existing CJK inter-ideograph rule.
+/// Kinsoku-prohibited boundaries were already merged into single segments in an
+/// earlier phase, so they are never split here.
 fn set_break_flags(segments: &mut [Segment]) {
     let len = segments.len();
+
+    // Reconstruct the source text and record each segment's end byte offset.
+    let mut text = String::new();
+    let mut seg_end_offset = Vec::with_capacity(len);
+    for seg in segments.iter() {
+        text.push_str(&seg.text);
+        seg_end_offset.push(text.len());
+    }
+
+    // UAX #14 break opportunities: byte offset -> may break before that offset.
+    // The reported index is the start of the piece following the break, i.e. a
+    // break is allowed *after* a segment whose end offset equals that index.
+    let mut uax14_break_offsets = std::collections::HashSet::new();
+    for (idx, _opportunity) in unicode_linebreak::linebreaks(&text) {
+        uax14_break_offsets.insert(idx);
+    }
+
     for i in 0..len {
         segments[i].break_after = match segments[i].kind {
             SegmentKind::Space | SegmentKind::ZeroWidthBreak | SegmentKind::SoftHyphen => true,
             SegmentKind::HardBreak => true,
             SegmentKind::Text => {
-                // CJK characters allow breaks between them (unless kinsoku prevents it)
                 if i + 1 < len && segments[i + 1].kind == SegmentKind::Text {
                     let last_char = segments[i].text.chars().last().unwrap_or(' ');
                     let next_first = segments[i + 1].text.chars().next().unwrap_or(' ');
-                    // Allow break between CJK characters (but not if next is kinsoku-start
-                    // or current ends with kinsoku-end -- those were already merged)
-                    is_cjk(last_char) || is_cjk(next_first)
+                    // CJK inter-ideograph break (kinsoku-prohibited cases already
+                    // merged away), OR a UAX #14 break opportunity at this boundary.
+                    is_cjk(last_char)
+                        || is_cjk(next_first)
+                        || uax14_break_offsets.contains(&seg_end_offset[i])
                 } else {
                     false
                 }
@@ -455,6 +478,103 @@ fn set_break_flags(segments: &mut [Segment]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Reconstruct the text up to and including the segment after which a break
+    // is allowed, for readable assertions.
+    fn break_after_texts(text: &str) -> Vec<String> {
+        let a = analyze(text);
+        let mut acc = String::new();
+        let mut out = Vec::new();
+        for seg in &a.segments {
+            acc.push_str(&seg.text);
+            if seg.break_after {
+                out.push(acc.clone());
+            }
+        }
+        out
+    }
+
+    // --- UAX #14 break opportunity tests ---
+
+    #[test]
+    fn uax14_allows_break_after_slash() {
+        // "and/or" has no spaces but UAX #14 allows a break after '/'.
+        let breaks = break_after_texts("and/or");
+        assert!(
+            breaks.iter().any(|s| s == "and/"),
+            "expected a break opportunity after '/': {:?}",
+            breaks
+        );
+    }
+
+    #[test]
+    fn uax14_allows_break_after_hyphen_in_compound() {
+        // "well-known" should be breakable after the hyphen.
+        let breaks = break_after_texts("well-known");
+        assert!(
+            breaks.iter().any(|s| s == "well-"),
+            "expected a break opportunity after '-': {:?}",
+            breaks
+        );
+    }
+
+    #[test]
+    fn uax14_still_breaks_at_spaces() {
+        // Regression: ordinary inter-word spaces remain break opportunities.
+        let breaks = break_after_texts("hello world");
+        assert!(
+            breaks.iter().any(|s| s == "hello "),
+            "space break must remain: {:?}",
+            breaks
+        );
+    }
+
+    #[test]
+    fn uax14_does_not_split_kinsoku_merged_segment() {
+        // "好。世": the period is a kinsoku-start char merged with "好" into one
+        // segment "好。". UAX #14 would allow a break before "世", but never
+        // inside "好。" -- so no segment may be just "。".
+        let a = analyze("好。世");
+        assert!(
+            a.segments.iter().all(|s| s.text != "。"),
+            "kinsoku period must stay merged, not its own segment: {:?}",
+            a.segments
+        );
+        // And the merged segment must contain the period attached to 好.
+        assert!(
+            a.segments.iter().any(|s| s.text == "好。"),
+            "expected merged '好。' segment: {:?}",
+            a.segments
+        );
+    }
+
+    #[test]
+    fn uax14_does_not_break_before_kinsoku_start_punctuation() {
+        // No break opportunity should land such that a line could start with
+        // a kinsoku-start char. Because '。' is merged into the preceding
+        // segment, the only break is after "好。".
+        let breaks = break_after_texts("好。世");
+        assert!(
+            !breaks.iter().any(|s| s.ends_with('好')),
+            "must not break between 好 and 。: {:?}",
+            breaks
+        );
+    }
+
+    #[test]
+    fn uax14_no_break_inside_plain_word() {
+        // No break opportunity in the middle of a simple word like "hello".
+        let a = analyze("hello");
+        // Only segment is "hello"; it must not be break_after (end-of-text break
+        // is handled by the terminator, not a segment flag).
+        assert!(
+            !a.segments
+                .iter()
+                .any(|s| s.kind == SegmentKind::Text && s.break_after),
+            "plain word must have no internal break: {:?}",
+            a.segments
+        );
+    }
 
     // --- CJK detection tests ---
 
