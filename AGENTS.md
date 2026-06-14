@@ -10,7 +10,7 @@ cargo check                               # check everything (lib + CLI binary)
 cargo fmt -- --check                      # verify formatting
 cargo fmt                                 # auto-format
 make lint                                 # clippy with -D warnings (all targets, all features)
-cargo test                                # run all 74 inline unit tests
+cargo test                                # run all inline unit tests
 cargo test test_name                      # run a single test by name
 cargo test --no-default-features          # test lib-only (no clap)
 ```
