@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal, Read as IoRead, Write as IoWrite};
 use std::path::PathBuf;
 use text2svg::font::{FontConfig, FontStyle};
 use text2svg::highlight::HighlightSetting;
-use text2svg::render::{self, RenderConfig, TextAlign};
+use text2svg::render::{self, Animation, RenderConfig, TextAlign};
 
 // Exit codes for distinct error categories
 const EXIT_USER_ERROR: i32 = 1;
@@ -58,10 +58,27 @@ Examples:
   # Wrap text at pixel width with center alignment
   text2svg \"Long text here\" --font Arial --pixel-width 400 --align center -o wrapped.svg
 
+  # Scatter animation with hollow-outline hover (open in a browser)
+  text2svg \"Dashboard\" --font Arial --animation scatter --hollow-hover -o title.svg
+
+  # One-shot settle (assemble) animation
+  text2svg \"Hello\" --font Arial --animation settle -o hello.svg
+
+  # Load a font file directly (e.g. a stroke-decomposed variable font) and
+  # statically explode a glyph into its strokes (bold weight via --var)
+  text2svg \"永\" --font-file SourceHanSerifSC-VF.otf --var wght=900 --explode 84 -o exploded.svg
+
+  # Select a font's own style name (not just the fixed weights)
+  text2svg \"Hi\" --font DinkieBitmap --style 9px -o pixel.svg
+
   # List available resources
   text2svg --list-fonts
   text2svg --list-theme
-  text2svg --list-syntax"
+  text2svg --list-syntax
+
+  # Discover a font's variable axes (--var) and feature tags (--features)
+  text2svg --font-file SourceHanSerifSC-VF.otf --list-axes
+  text2svg --font \"Arial\" --list-features"
 )]
 struct Args {
     /// input text string
@@ -88,30 +105,48 @@ struct Args {
     #[arg(long)]
     font: Option<String>,
 
+    /// path to a font file (.otf/.ttf/.ttc), bypassing the system font database.
+    /// Takes precedence over --font. Useful for stroke-decomposed variable fonts.
+    #[arg(long)]
+    font_file: Option<String>,
+
     /// font size in pixels
     #[arg(long, default_value_t = 64)]
     size: u32,
 
     /// svg fill color (e.g., "#ff0000", "none"). Overridden by highlight.
-    #[arg(long, conflicts_with = "highlight", default_value = "none")]
+    /// Defaults to a solid ink so text is filled and readable.
+    #[arg(long, conflicts_with = "highlight", default_value = "#111827")]
     fill: String,
 
     /// font stroke color (e.g., "#000", "currentColor"). Overridden by highlight.
-    #[arg(long, conflicts_with = "highlight", default_value = "#000")]
+    /// Defaults to "none" (solid filled text); a stroke is only shown on hover
+    /// when --hollow-hover is set.
+    #[arg(long, conflicts_with = "highlight", default_value = "none")]
     color: String,
 
-    /// Add draw animation effect (works best with stroke only)
-    #[arg(long, conflicts_with = "highlight")]
-    animate: bool,
+    /// Animation preset: none, draw, settle, scatter. `settle` assembles glyph
+    /// shards from their outline vector once; `scatter` loops a scatter/
+    /// reassemble sway; `draw` is the legacy per-line stroke effect.
+    #[arg(value_enum, long, conflicts_with = "highlight")]
+    animation: Option<Animation>,
 
-    /// font style (regular, bold, italic, etc.). Overridden by highlight.
-    #[arg(
-        value_enum,
-        long,
-        conflicts_with = "highlight",
-        default_value = "regular"
-    )]
-    style: Option<FontStyle>,
+    /// Reveal a hollow outline on hover (solid fill fades to a translucent tint
+    /// plus a visible stroke). Only interactive in browsers/HTML embeds.
+    #[arg(long)]
+    hollow_hover: bool,
+
+    /// Shard spread amplitude in pixels (displacement along each shard's outline
+    /// vector). With --animation settle/scatter it sets the travel distance;
+    /// without an animation it renders a static exploded image.
+    #[arg(long, conflicts_with = "highlight")]
+    explode: Option<f32>,
+
+    /// font style by the font's own style name (e.g. "regular", "bold", "9px").
+    /// Defaults to "regular", or the first available style sorted by name.
+    /// Overridden by highlight.
+    #[arg(long, conflicts_with = "highlight")]
+    style: Option<String>,
 
     /// letter spacing (in em units, e.g., 0.1)
     #[arg(long, default_value_t = 0.0)]
@@ -121,6 +156,10 @@ struct Args {
     /// font features (e.g., "cv01=1,calt=0,liga=1")
     #[arg(long, conflicts_with = "highlight")]
     features: Option<String>,
+
+    /// variable-font axis settings (e.g., "wght=900,opsz=12")
+    #[arg(long)]
+    var: Option<String>,
 
     /// Enable syntax highlighting mode for files
     #[arg(long)]
@@ -154,6 +193,16 @@ struct Args {
     /// List installed font families
     #[arg(long)]
     list_fonts: bool,
+
+    /// List the variable-font axes (--var tags) and value ranges for the given
+    /// --font/--font-file
+    #[arg(long)]
+    list_axes: bool,
+
+    /// List the OpenType feature tags (--features targets) the given
+    /// --font/--font-file declares
+    #[arg(long)]
+    list_features: bool,
 }
 
 fn main() {
@@ -238,18 +287,6 @@ fn run() -> Result<(), CliError> {
     let (input_text, input_file) = resolve_input(&args)?;
 
     // --- Font and Render Config ---
-    let font_name = match args.font {
-        Some(f) => f,
-        None => {
-            if input_text.is_none() && input_file.is_none() {
-                return Ok(());
-            }
-            return Err(CliError::User(anyhow::anyhow!(
-                "--font is required for rendering\n  Hint: use --list-fonts to see available font families"
-            )));
-        }
-    };
-
     let output_to_stdout = args.output == "-";
     let output_path = if output_to_stdout {
         // Use a temporary path; we'll intercept before save
@@ -259,19 +296,46 @@ fn run() -> Result<(), CliError> {
     };
 
     // Create FontConfig
-    let mut font_config = FontConfig::new(
-        font_name,
-        args.size,
-        args.fill.clone(),
-        args.color.clone(),
-        args.debug,
-    )
-    .map_err(|e| {
-        CliError::Font(anyhow::anyhow!(
-            "{}\n  Hint: use --list-fonts to see available font families",
-            e
-        ))
-    })?;
+    let animation = args.animation.unwrap_or(Animation::None);
+    // The draw animation renders the glyph stroke; if the user left the stroke
+    // as the default "none" (solid-fill preset), fall back to the classic
+    // outline look so the draw effect is visible.
+    let (fill, color) = if animation == Animation::Draw && args.color == "none" {
+        ("none".to_string(), args.fill.clone())
+    } else {
+        (args.fill.clone(), args.color.clone())
+    };
+
+    let mut font_config = if let Some(ref file) = args.font_file {
+        // A font file path bypasses the system font database entirely.
+        let path = PathBuf::from(file);
+        if !path.exists() {
+            return Err(CliError::Io(anyhow::anyhow!(
+                "Font file not found: {}",
+                path.display()
+            )));
+        }
+        FontConfig::from_file(&path, args.size, fill, color, args.debug)
+            .map_err(|e| CliError::Font(anyhow::anyhow!("{}", e)))?
+    } else {
+        let font_name = match args.font {
+            Some(ref f) => f.clone(),
+            None => {
+                if input_text.is_none() && input_file.is_none() {
+                    return Ok(());
+                }
+                return Err(CliError::User(anyhow::anyhow!(
+                    "--font or --font-file is required for rendering\n  Hint: use --list-fonts to see available font families"
+                )));
+            }
+        };
+        FontConfig::new(font_name, args.size, fill, color, args.debug).map_err(|e| {
+            CliError::Font(anyhow::anyhow!(
+                "{}\n  Hint: use --list-fonts to see available font families",
+                e
+            ))
+        })?
+    };
     font_config.set_letter_space(args.space);
 
     // Apply font features if specified
@@ -299,13 +363,83 @@ fn run() -> Result<(), CliError> {
         );
     }
 
+    // Apply variable-font axis settings if specified.
+    if let Some(var_str) = &args.var {
+        if let Err(err) = font_config.set_variations_from_string(var_str) {
+            return Err(CliError::User(anyhow::anyhow!(
+                "Failed to parse font variations '{}': {}",
+                var_str,
+                err
+            )));
+        }
+        if args.debug {
+            eprintln!(
+                "Applied font variations: {:?}",
+                font_config.get_variations()
+            );
+        }
+    }
+
+    // Font introspection: report the axes/features the loaded font supports.
+    if args.list_axes {
+        let axes = font_config.list_axes();
+        if axes.is_empty() {
+            eprintln!("No variation axes (not a variable font)");
+        }
+        for axis in axes {
+            let name = axis.name.map(|n| format!("\t{}", n)).unwrap_or_default();
+            let hidden = if axis.hidden { "\t[hidden]" } else { "" };
+            println!(
+                "{}\tmin={} default={} max={}{}{}",
+                axis.tag, axis.min, axis.default, axis.max, name, hidden
+            );
+        }
+        return Ok(());
+    }
+
+    if args.list_features {
+        let tags = font_config.list_feature_tags();
+        if tags.is_empty() {
+            eprintln!("No OpenType features declared");
+        }
+        for tag in tags {
+            println!("{}", tag);
+        }
+        return Ok(());
+    }
+
+    // Resolve the requested style against the font's own style names for the
+    // plain-text path (highlight mode keeps per-token bold/italic selection).
+    if !args.highlight {
+        let resolved = font_config
+            .resolve_style_name(args.style.as_deref())
+            .ok_or_else(|| {
+                let available = font_config.available_styles();
+                let available = if available.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    available.join(", ")
+                };
+                CliError::User(anyhow::anyhow!(
+                    "font style '{}' not found\n  Available styles: {}",
+                    args.style.as_deref().unwrap_or(""),
+                    available
+                ))
+            })?;
+        if args.debug {
+            eprintln!("Resolved font style: {}", resolved);
+        }
+        font_config.set_active_style(resolved);
+    }
+
     // Create RenderConfig (for non-highlight mode)
-    let mut render_config =
-        RenderConfig::new(args.animate, args.style.unwrap_or(FontStyle::Regular));
+    let mut render_config = RenderConfig::new(animation, FontStyle::Regular);
     render_config.set_max_width(args.width);
     render_config.set_max_pixel_width(args.pixel_width);
     render_config.set_align(args.align.unwrap_or(TextAlign::Left));
     render_config.set_hyphenate(!args.no_hyphen);
+    render_config.set_hollow_hover(args.hollow_hover);
+    render_config.set_explode(args.explode);
 
     // --- Rendering Logic ---
     if let Some(text) = input_text {

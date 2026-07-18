@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::font::{FontConfig, FontStyle};
+use crate::shard::{compute_shards, Cmd, ContourPen};
 use rustybuzz::ttf_parser;
 use rustybuzz::ttf_parser::{GlyphId, Rect};
 use rustybuzz::Face;
@@ -20,6 +21,18 @@ use svg::Node; // Added Node
 pub type GlyphCache = HashMap<u16, String>; // GlyphId -> SVG ID (e.g., "g123")
                                             // Store Box<dyn Node> because Node trait object is not Sized
 pub type GlyphDefs = HashMap<String, Box<dyn Node>>; // SVG ID -> Boxed <path> Node for <defs>
+
+/// glyph_id -> its shards (SVG def id + scatter direction), reused across the
+/// document so per-contour path defs are only built once per glyph. Populated
+/// only when settle/scatter animation is active.
+pub type ShardCache = HashMap<u16, Vec<ShardRef>>;
+
+/// A cached reference to one shard's path definition and its outward direction.
+#[derive(Clone, Debug)]
+pub struct ShardRef {
+    pub svg_id: String,
+    pub direction: (f32, f32),
+}
 
 /// path configuration for SVG1.1 https://www.w3.org/TR/SVG11/painting.html
 #[derive(Clone, Debug)]
@@ -71,6 +84,15 @@ pub struct TextBuilder {
     /// Source text of the line, used to map glyph clusters back to characters so
     /// inter-ideograph (CJK) gaps can be stretched for justification.
     justify_text: Option<String>,
+    /// When true, each glyph is emitted as per-contour shard groups (for the
+    /// settle/scatter animations) instead of a single `<use>`.
+    emit_shards: bool,
+    /// Scatter translation distance in pixels (direction is unitless, so the
+    /// `translate` offset is `direction * scatter_distance`).
+    scatter_distance: f32,
+    /// Static outward displacement in pixels baked onto each shard (the
+    /// "exploded" pose). Zero when shards animate instead.
+    explode_offset: f32,
 }
 
 impl Default for TextBuilder {
@@ -80,6 +102,9 @@ impl Default for TextBuilder {
             path_config: PathConfig::default(),
             justify_ratio: 0.0,
             justify_text: None,
+            emit_shards: false,
+            scatter_distance: 0.0,
+            explode_offset: 0.0,
         }
     }
 }
@@ -104,6 +129,21 @@ impl TextBuilder {
     /// stretched during justification.
     pub fn set_justify_text(&mut self, text: &str) -> &mut Self {
         self.justify_text = Some(text.to_string());
+        self
+    }
+
+    /// Enable per-glyph shard emission for the settle/scatter animations.
+    /// `distance` is the scatter translation in pixels.
+    pub fn set_shards(&mut self, emit: bool, distance: f32) -> &mut Self {
+        self.emit_shards = emit;
+        self.scatter_distance = distance;
+        self
+    }
+
+    /// Static outward displacement (px) baked onto each shard for the exploded
+    /// pose. Ignored unless shard emission is enabled.
+    pub fn set_explode_offset(&mut self, offset: f32) -> &mut Self {
+        self.explode_offset = offset;
         self
     }
 
@@ -146,6 +186,7 @@ impl TextBuilder {
         glyphs: &GlyphBuffer,
         glyph_cache: &mut GlyphCache,
         glyph_defs: &mut GlyphDefs, // Takes mutable reference to HashMap<String, Box<dyn Node>>
+        shard_cache: &mut ShardCache,
     ) -> (Group, Rect) {
         // Rect uses i16
         let ft_face = font_config
@@ -166,7 +207,11 @@ impl TextBuilder {
         }
 
         let ft_face_data = ft_face.copy_font_data().expect("Failed to copy font data");
-        let hb_face = Face::from_slice(&ft_face_data, 0).expect("Failed to create rustybuzz::Face");
+        let mut hb_face =
+            Face::from_slice(&ft_face_data, 0).expect("Failed to create rustybuzz::Face");
+        // Variable-font axes must be applied before outlining so shard geometry
+        // reflects the requested instance (e.g. wght=900).
+        hb_face.set_variations(font_config.get_variations());
 
         let glyph_num = glyphs.len();
         let glyph_positions = glyphs.glyph_positions();
@@ -192,56 +237,118 @@ impl TextBuilder {
             let glyph_id = glyph_infos[i].glyph_id;
             let glyph_pos = glyph_positions[i];
             let glyph_id_u16 = glyph_id as u16;
-            let svg_id = format!("g{}", glyph_id_u16);
 
             // Add letter spacing before rendering the glyph (if not the first char)
             current_x += if !prev_space_glyph { letter_space } else { 0.0 };
             prev_space_glyph = false; // Reset after potentially adding space
 
-            // --- Manage Glyph Definition ---
-            if let std::collections::hash_map::Entry::Vacant(e) = glyph_cache.entry(glyph_id_u16) {
-                let mut d_str = String::new();
-                // Build path at origin (0,0) with scaling
-                let mut path_builder = GlyphPathBuilder::new(
-                    scale_factor,
-                    -scale_factor, // Negative Y scale to flip vertically
-                    0.0,           // X origin for definition path
-                    0.0,           // Y origin for definition path
-                    &mut d_str,
-                );
-
-                // Outline the glyph to generate the path data 'd_str'
-                let _bbox_def = hb_face.outline_glyph(GlyphId(glyph_id_u16), &mut path_builder);
-
-                // Create the <path> node for <defs>
-                // No fill/stroke here; apply to <use> or parent group
-                let def_path = Path::new().set("id", svg_id.clone()).set("d", d_str);
-
-                // Insert the Boxed node into glyph_defs
-                glyph_defs.insert(svg_id.clone(), Box::new(def_path));
-                e.insert(svg_id.clone());
-
-                if font_config.get_debug() {
-                    eprintln!("Defined glyph: id={}, svg_id={}", glyph_id_u16, svg_id);
-                }
-            }
-
-            // --- Create <use> Element ---
+            // --- Glyph pen position ---
             let use_x = current_x + (glyph_pos.x_offset as f32 * scale_factor);
             let use_y = base_y - (glyph_pos.y_offset as f32 * scale_factor); // Adjust y based on rustybuzz offset
+            let advance_width = glyph_pos.x_advance as f32 * scale_factor;
 
-            let use_node = Use::new()
-                .set("href", format!("#{}", svg_id)) // Use href (SVG 2 standard)
-                .set("x", use_x)
-                .set("y", use_y);
+            if self.emit_shards {
+                // --- Per-contour shard emission (settle/scatter) ---
+                let shards = shard_cache.entry(glyph_id_u16).or_insert_with(|| {
+                    let mut pen = ContourPen::new();
+                    let _ = hb_face.outline_glyph(GlyphId(glyph_id_u16), &mut pen);
+                    compute_shards(pen.finish())
+                        .iter()
+                        .enumerate()
+                        .map(|(k, geom)| {
+                            let sid = format!("g{}s{}", glyph_id_u16, k);
+                            let d = cmds_to_path_d(&geom.cmds, scale_factor);
+                            let def_path = Path::new().set("id", sid.clone()).set("d", d);
+                            glyph_defs.insert(sid.clone(), Box::new(def_path));
+                            ShardRef {
+                                svg_id: sid,
+                                direction: geom.direction,
+                            }
+                        })
+                        .collect()
+                });
 
-            use_group = use_group.add(use_node);
+                // Stagger the flight by the glyph's horizontal centre (1.2ms/px)
+                // so shards ripple across the text from left to right.
+                let centre_x = use_x + advance_width / 2.0;
+                let delay = centre_x * 0.0012;
 
-            if font_config.get_debug() {
-                eprintln!(
-                    "Used glyph: id={}, svg_id={}, use_x={}, use_y={}, x_adv={}",
-                    glyph_id_u16, svg_id, use_x, use_y, glyph_pos.x_advance
-                );
+                for shard in shards.iter() {
+                    let (dir_x, dir_y) = shard.direction;
+                    let tx = dir_x * self.scatter_distance;
+                    let ty = dir_y * self.scatter_distance;
+                    let use_node = Use::new()
+                        .set("href", format!("#{}", shard.svg_id))
+                        .set("x", use_x)
+                        .set("y", use_y);
+                    let mut shard_group = Group::new().set("class", "shard").set(
+                        "style",
+                        format!(
+                            "--dx:{:.2}px;--dy:{:.2}px;animation-delay:{:.3}s",
+                            tx, ty, delay
+                        ),
+                    );
+                    // Static exploded pose: shift the shard out along its vector.
+                    if self.explode_offset != 0.0 {
+                        shard_group = shard_group.set(
+                            "transform",
+                            format!(
+                                "translate({:.2} {:.2})",
+                                dir_x * self.explode_offset,
+                                dir_y * self.explode_offset
+                            ),
+                        );
+                    }
+                    shard_group = shard_group.add(use_node);
+                    use_group = use_group.add(shard_group);
+                }
+            } else {
+                let svg_id = format!("g{}", glyph_id_u16);
+
+                // --- Manage Glyph Definition ---
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    glyph_cache.entry(glyph_id_u16)
+                {
+                    let mut d_str = String::new();
+                    // Build path at origin (0,0) with scaling
+                    let mut path_builder = GlyphPathBuilder::new(
+                        scale_factor,
+                        -scale_factor, // Negative Y scale to flip vertically
+                        0.0,           // X origin for definition path
+                        0.0,           // Y origin for definition path
+                        &mut d_str,
+                    );
+
+                    // Outline the glyph to generate the path data 'd_str'
+                    let _bbox_def = hb_face.outline_glyph(GlyphId(glyph_id_u16), &mut path_builder);
+
+                    // Create the <path> node for <defs>
+                    // No fill/stroke here; apply to <use> or parent group
+                    let def_path = Path::new().set("id", svg_id.clone()).set("d", d_str);
+
+                    // Insert the Boxed node into glyph_defs
+                    glyph_defs.insert(svg_id.clone(), Box::new(def_path));
+                    e.insert(svg_id.clone());
+
+                    if font_config.get_debug() {
+                        eprintln!("Defined glyph: id={}, svg_id={}", glyph_id_u16, svg_id);
+                    }
+                }
+
+                // --- Create <use> Element ---
+                let use_node = Use::new()
+                    .set("href", format!("#{}", svg_id)) // Use href (SVG 2 standard)
+                    .set("x", use_x)
+                    .set("y", use_y);
+
+                use_group = use_group.add(use_node);
+
+                if font_config.get_debug() {
+                    eprintln!(
+                        "Used glyph: id={}, svg_id={}, use_x={}, use_y={}, x_adv={}",
+                        glyph_id_u16, svg_id, use_x, use_y, glyph_pos.x_advance
+                    );
+                }
             }
 
             // --- Update Bounding Box ---
@@ -249,7 +356,6 @@ impl TextBuilder {
             // For accurate bounds, we'd need the actual glyph bounding box from hb_face.outline_glyph
             // and transform it, which is more complex. Using advances provides width.
             // Height estimation uses font metrics.
-            let advance_width = glyph_pos.x_advance as f32 * scale_factor;
             let estimated_glyph_max_x = use_x + advance_width; // Rough estimate
             let estimated_glyph_min_y = use_y - (target_glyph_height); // Rough estimate based on size
             let estimated_glyph_max_y = use_y; // Baseline is roughly max y
@@ -409,6 +515,36 @@ impl ttf_parser::OutlineBuilder for NullOutlineBuilder {
     fn close(&mut self) {}
 }
 
+/// Convert raw font-unit shard commands into an SVG path `d` string, applying
+/// the same scale and vertical flip used for the whole-glyph `<defs>` paths.
+fn cmds_to_path_d(cmds: &[Cmd], scale: f32) -> String {
+    let mut d = String::new();
+    let tx = |x: f32| x * scale;
+    let ty = |y: f32| -y * scale;
+    for cmd in cmds {
+        match *cmd {
+            Cmd::Move(x, y) => write!(d, "M {} {}", tx(x), ty(y)).unwrap(),
+            Cmd::Line(x, y) => write!(d, "L {} {}", tx(x), ty(y)).unwrap(),
+            Cmd::Quad(cx, cy, x, y) => {
+                write!(d, "Q {} {} {} {}", tx(cx), ty(cy), tx(x), ty(y)).unwrap()
+            }
+            Cmd::Cubic(c1x, c1y, c2x, c2y, x, y) => write!(
+                d,
+                "C {} {} {} {} {} {}",
+                tx(c1x),
+                ty(c1y),
+                tx(c2x),
+                ty(c2y),
+                tx(x),
+                ty(y)
+            )
+            .unwrap(),
+            Cmd::Close => write!(d, "Z ").unwrap(),
+        }
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,8 +576,16 @@ mod tests {
         let glyphs = shape(text, fc);
         let mut cache: GlyphCache = HashMap::new();
         let mut defs: GlyphDefs = HashMap::new();
+        let mut shards: ShardCache = HashMap::new();
         let builder = TextBuilder::new();
-        let (_g, bbox) = builder.build(fc, &FontStyle::Regular, &glyphs, &mut cache, &mut defs);
+        let (_g, bbox) = builder.build(
+            fc,
+            &FontStyle::Regular,
+            &glyphs,
+            &mut cache,
+            &mut defs,
+            &mut shards,
+        );
         bbox.width()
     }
 
@@ -465,11 +609,53 @@ mod tests {
         let glyphs = shape(text, fc);
         let mut cache: GlyphCache = HashMap::new();
         let mut defs: GlyphDefs = HashMap::new();
+        let mut shards: ShardCache = HashMap::new();
         let mut builder = TextBuilder::new();
         builder.set_justify_ratio(ratio);
         builder.set_justify_text(text);
-        let (_g, bbox) = builder.build(fc, &FontStyle::Regular, &glyphs, &mut cache, &mut defs);
+        let (_g, bbox) = builder.build(
+            fc,
+            &FontStyle::Regular,
+            &glyphs,
+            &mut cache,
+            &mut defs,
+            &mut shards,
+        );
         bbox.width()
+    }
+
+    // A shard build emits per-contour <g class="shard"> groups instead of a
+    // single <use>, so a letter with a counter (like "o") produces shard groups.
+    #[test]
+    fn shard_mode_emits_shard_groups() {
+        let fc = create_test_font_config();
+        let glyphs = shape("o", &fc);
+        let mut cache: GlyphCache = HashMap::new();
+        let mut defs: GlyphDefs = HashMap::new();
+        let mut shards: ShardCache = HashMap::new();
+        let mut builder = TextBuilder::new();
+        builder.set_shards(true, 96.0);
+        let (group, _bbox) = builder.build(
+            &fc,
+            &FontStyle::Regular,
+            &glyphs,
+            &mut cache,
+            &mut defs,
+            &mut shards,
+        );
+        let svg = group.to_string();
+        assert!(
+            svg.contains("class=\"shard\""),
+            "shard mode must emit shard groups: {svg}"
+        );
+        assert!(
+            svg.contains("--dx"),
+            "shard groups must carry a direction offset: {svg}"
+        );
+        assert!(
+            !shards.is_empty(),
+            "shard cache should be populated after a shard build"
+        );
     }
 
     #[test]

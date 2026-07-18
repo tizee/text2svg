@@ -283,7 +283,8 @@ pub fn calculate_text_width(
         .or_else(|| font_config.get_font_by_style(&FontStyle::Regular))?;
 
     let font_data = ft_face.copy_font_data()?;
-    let hb_face = Face::from_slice(&font_data, 0)?;
+    let mut hb_face = Face::from_slice(&font_data, 0)?;
+    hb_face.set_variations(font_config.get_variations());
 
     let mut buffer = rustybuzz::UnicodeBuffer::new();
     buffer.push_str(text);

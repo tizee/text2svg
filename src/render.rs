@@ -12,7 +12,7 @@ use rustybuzz::GlyphBuffer;
 
 use crate::font::{FontConfig, FontStyle};
 use crate::highlight::{HighlightColor, HighlightFontStyle, HighlightSetting};
-use crate::svg::{GlyphCache, GlyphDefs, TextBuilder};
+use crate::svg::{GlyphCache, GlyphDefs, ShardCache, TextBuilder};
 use crate::utils::open_file_by_lines;
 use crate::utils::open_file_by_lines_pixel_width;
 use crate::utils::open_file_by_lines_width;
@@ -72,9 +72,65 @@ impl std::fmt::Display for TextAlign {
     }
 }
 
+/// Animation preset applied to the generated SVG.
+///
+/// - `None`: static output.
+/// - `Draw`: legacy per-line stroke "draw" effect (stroke-dashoffset).
+/// - `Settle`: glyph shards fly in from their outline vector and assemble once.
+/// - `Scatter`: glyph shards continuously scatter outward and reassemble (loop).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "cli", value(rename_all = "lower"))]
+pub enum Animation {
+    #[default]
+    None,
+    Draw,
+    Settle,
+    Scatter,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseAnimationErr;
+
+impl std::fmt::Display for ParseAnimationErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid animation (expected: none, draw, settle, scatter)"
+        )
+    }
+}
+
+impl std::str::FromStr for Animation {
+    type Err = ParseAnimationErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(Animation::None),
+            "draw" => Ok(Animation::Draw),
+            "settle" => Ok(Animation::Settle),
+            "scatter" => Ok(Animation::Scatter),
+            _ => Err(ParseAnimationErr),
+        }
+    }
+}
+
+impl std::fmt::Display for Animation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Animation::None => write!(f, "none"),
+            Animation::Draw => write!(f, "draw"),
+            Animation::Settle => write!(f, "settle"),
+            Animation::Scatter => write!(f, "scatter"),
+        }
+    }
+}
+
 // render config for non-highlight mode
 pub struct RenderConfig {
-    animate: bool,
+    animation: Animation,
+    hollow_hover: bool,
+    explode: Option<f32>,
     font_style: FontStyle,
     max_width: Option<usize>,
     max_pixel_width: Option<f32>,
@@ -84,9 +140,11 @@ pub struct RenderConfig {
 }
 
 impl RenderConfig {
-    pub fn new(animate: bool, style: FontStyle) -> Self {
+    pub fn new(animation: Animation, style: FontStyle) -> Self {
         Self {
-            animate,
+            animation,
+            hollow_hover: false,
+            explode: None,
             font_style: style,
             max_width: None,
             max_pixel_width: None,
@@ -142,8 +200,57 @@ impl RenderConfig {
         &self.font_style
     }
 
-    pub fn get_animate(&self) -> bool {
-        self.animate
+    pub fn get_animation(&self) -> Animation {
+        self.animation
+    }
+
+    /// Whether the active animation renders per-glyph shards (settle/scatter).
+    pub fn emit_shards(&self) -> bool {
+        matches!(self.animation, Animation::Settle | Animation::Scatter) || self.explode.is_some()
+    }
+
+    /// Whether the legacy per-line stroke "draw" effect is active.
+    pub fn is_draw(&self) -> bool {
+        self.animation == Animation::Draw
+    }
+
+    /// Whether shards travel over time (settle/scatter) rather than sitting in a
+    /// static exploded pose.
+    fn is_animated_shards(&self) -> bool {
+        matches!(self.animation, Animation::Settle | Animation::Scatter)
+    }
+
+    /// Set the shard spread amplitude in pixels.
+    pub fn set_explode(&mut self, explode: Option<f32>) -> &mut Self {
+        self.explode = explode;
+        self
+    }
+
+    pub fn get_explode(&self) -> Option<f32> {
+        self.explode
+    }
+
+    /// Resolve the shard spread into `(animation_travel_px, static_offset_px)`.
+    /// Only one is ever non-zero: settle/scatter animate the travel distance,
+    /// while an explode without animation bakes a static outward offset.
+    fn shard_spread(&self, size: u32) -> (f32, f32) {
+        let amplitude = self.explode.unwrap_or(size as f32 * 1.5);
+        if self.is_animated_shards() {
+            (amplitude, 0.0)
+        } else {
+            (0.0, self.explode.unwrap_or(0.0))
+        }
+    }
+
+    /// Enable the hollow-outline hover effect (solid fill turns to a translucent
+    /// fill plus a visible stroke on hover).
+    pub fn set_hollow_hover(&mut self, hollow_hover: bool) -> &mut Self {
+        self.hollow_hover = hollow_hover;
+        self
+    }
+
+    pub fn get_hollow_hover(&self) -> bool {
+        self.hollow_hover
     }
 
     pub fn get_align(&self) -> TextAlign {
@@ -167,6 +274,9 @@ pub fn render_file_highlight_to_doc(
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new();
+    // Highlight mode does not use shard animations; kept only to satisfy the
+    // shared TextBuilder::build signature.
+    let mut shard_cache: ShardCache = HashMap::new();
     let mut main_content = Group::new();
 
     let theme = theme_set.themes.get(&highlight_setting.theme)?;
@@ -198,6 +308,7 @@ pub fn render_file_highlight_to_doc(
                     style,
                     &mut glyph_cache,
                     &mut glyph_defs,
+                    &mut shard_cache,
                 ) {
                     let foreground_color = HighlightColor::new(style.foreground).to_string();
                     let styled_token_group = token_group
@@ -221,7 +332,7 @@ pub fn render_file_highlight_to_doc(
         .set("fill", background_color);
 
     let mut defs = Definitions::new();
-    for (_id, node_box) in glyph_defs.iter() {
+    for node_box in glyph_defs.values() {
         defs = defs.add(node_box.clone());
     }
 
@@ -249,6 +360,7 @@ pub fn render_file_highlight(
 }
 
 // Renders a token (part of a highlighted line)
+#[allow(clippy::too_many_arguments)]
 pub fn render_token(
     x: f32,
     y: f32,
@@ -257,6 +369,7 @@ pub fn render_token(
     style: TokenStyle,
     glyph_cache: &mut GlyphCache,
     glyph_defs: &mut GlyphDefs,
+    shard_cache: &mut ShardCache,
 ) -> Option<(Group, Rect)> {
     let font_style = HighlightFontStyle::new(style.font_style).get_style();
 
@@ -274,12 +387,14 @@ pub fn render_token(
             &glyph_buffer,
             glyph_cache,
             glyph_defs,
+            shard_cache,
         ));
     }
     None
 }
 
 // Renders a plain text line
+#[allow(clippy::too_many_arguments)]
 pub fn render_text_line(
     x: f32,
     y: f32,
@@ -288,6 +403,7 @@ pub fn render_text_line(
     render_config: &RenderConfig,
     glyph_cache: &mut GlyphCache,
     glyph_defs: &mut GlyphDefs,
+    shard_cache: &mut ShardCache,
 ) -> Option<(Group, Rect)> {
     let style = render_config.get_font_style();
 
@@ -297,8 +413,20 @@ pub fn render_text_line(
         }
         let mut svg_builder = TextBuilder::new();
         svg_builder.set_origin(Point { x, y });
+        if render_config.emit_shards() {
+            let (travel, offset) = render_config.shard_spread(font_config.get_size());
+            svg_builder.set_shards(true, travel);
+            svg_builder.set_explode_offset(offset);
+        }
 
-        return Some(svg_builder.build(font_config, style, &glyph_buffer, glyph_cache, glyph_defs));
+        return Some(svg_builder.build(
+            font_config,
+            style,
+            &glyph_buffer,
+            glyph_cache,
+            glyph_defs,
+            shard_cache,
+        ));
     }
 
     if font_config.get_debug() {
@@ -316,6 +444,7 @@ fn render_text_line_justified(
     render_config: &RenderConfig,
     glyph_cache: &mut GlyphCache,
     glyph_defs: &mut GlyphDefs,
+    shard_cache: &mut ShardCache,
 ) -> Option<(Group, Rect)> {
     let style = render_config.get_font_style();
 
@@ -324,7 +453,19 @@ fn render_text_line_justified(
         svg_builder.set_origin(Point { x: 0.0, y: 0.0 });
         svg_builder.set_justify_ratio(ratio);
         svg_builder.set_justify_text(line);
-        return Some(svg_builder.build(font_config, style, &glyph_buffer, glyph_cache, glyph_defs));
+        if render_config.emit_shards() {
+            let (travel, offset) = render_config.shard_spread(font_config.get_size());
+            svg_builder.set_shards(true, travel);
+            svg_builder.set_explode_offset(offset);
+        }
+        return Some(svg_builder.build(
+            font_config,
+            style,
+            &glyph_buffer,
+            glyph_cache,
+            glyph_defs,
+            shard_cache,
+        ));
     }
     None
 }
@@ -345,6 +486,8 @@ fn build_multiline_doc_justified(
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new();
+    let mut shard_cache: ShardCache = HashMap::new();
+    let ink = font_config.get_fill_color().to_string();
     let mut main_group = Group::new()
         .set("fill", font_config.get_fill_color().as_str())
         .set("stroke", font_config.get_color().as_str());
@@ -372,6 +515,7 @@ fn build_multiline_doc_justified(
             render_config,
             &mut glyph_cache,
             &mut glyph_defs,
+            &mut shard_cache,
         ) {
             let line_w = line_bbox.width() as u32;
             max_width = max_width.max(line_w);
@@ -387,7 +531,7 @@ fn build_multiline_doc_justified(
             .set("transform", line_group_transform)
             .add(line_content_group);
 
-        if render_config.get_animate() {
+        if render_config.is_draw() {
             let animation_delay = line_index as f32 * 0.8;
             positioned_line_group = positioned_line_group
                 .set("class", "text-line")
@@ -398,41 +542,125 @@ fn build_multiline_doc_justified(
         current_height += line_height;
     }
 
+    main_group = decorate_main_group(main_group, render_config, &ink);
+
     let mut defs = Definitions::new();
-    for (_id, node_box) in glyph_defs.iter() {
+    for node_box in glyph_defs.values() {
         defs = defs.add(node_box.clone());
     }
     doc = doc.add(defs);
     doc = doc.add(main_group);
 
-    if render_config.get_animate() {
-        doc = doc.add(get_animation_style());
+    if let Some(style) = build_style(render_config) {
+        doc = doc.add(style);
     }
 
     doc = doc
         .set("height", current_height)
         .set("width", max_width)
+        // overflow:visible so animated/exploded shards are not clipped when the
+        // SVG is embedded in HTML.
+        .set("overflow", "visible")
         .set("viewBox", format!("0 0 {} {}", max_width, current_height));
 
     Some(doc)
 }
 
-fn get_animation_style() -> Style {
-    Style::new(
-        "
-  @keyframes draw {
-    to {
-      stroke-dashoffset: 0;
-    }
-  }
-
+/// Legacy per-line stroke "draw" effect.
+const DRAW_CSS: &str = r#"
+  @keyframes draw { to { stroke-dashoffset: 0; } }
   .text-line {
-    /* Adjust stroke-dasharray based on expected max path length if needed */
     stroke-dasharray: 1000 1000;
     stroke-dashoffset: 1000;
     animation: draw 1.5s ease forwards;
-  }",
-    )
+  }
+"#;
+
+// The settle/scatter glyph-shard animations below are adapted from yuragi
+// (https://github.com/lawvs/yuragi, MIT (c) lawvs and CircuitCoder).
+
+/// Shards fade in from their outline vector and assemble once.
+const SETTLE_CSS: &str = r#"
+  .shard { transform-box: fill-box; transform-origin: center; animation-fill-mode: both; }
+  @keyframes shard-settle {
+    from { opacity: 0; transform: translate(var(--dx, 0), var(--dy, 0)) scale(1.05); }
+    60%  { opacity: 1; }
+    to   { opacity: 1; transform: translate(0, 0) scale(1); }
+  }
+  .text-anim-settle .shard {
+    animation-name: shard-settle;
+    animation-duration: 0.7s;
+    animation-timing-function: cubic-bezier(0, 0, 0, 1);
+  }
+  @media (prefers-reduced-motion: reduce) { .shard { animation: none; opacity: 1; } }
+"#;
+
+/// Shards continuously scatter outward and fade out, then fade back in and
+/// reassemble (a looping fade-out / fade-in sway).
+const SCATTER_CSS: &str = r#"
+  .shard { transform-box: fill-box; transform-origin: center; animation-fill-mode: both; }
+  @keyframes shard-scatter {
+    0%   { opacity: 1; transform: translate(0, 0) scale(1); }
+    45%  { opacity: 0; transform: translate(var(--dx, 0), var(--dy, 0)) scale(0.9); }
+    55%  { opacity: 0; transform: translate(var(--dx, 0), var(--dy, 0)) scale(0.9); }
+    100% { opacity: 1; transform: translate(0, 0) scale(1); }
+  }
+  .text-anim-scatter .shard {
+    animation-name: shard-scatter;
+    animation-duration: 2.6s;
+    animation-iteration-count: infinite;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) { .shard { animation: none; opacity: 1; } }
+"#;
+
+/// Hollow-outline hover: the solid fill fades to a translucent tint and a
+/// stroke appears, so the glyphs read as outlines while hovered.
+const HOLLOW_HOVER_CSS: &str = r#"
+  .hollow-target { transition: fill 0.25s ease, stroke 0.25s ease; }
+  svg:hover .hollow-target {
+    fill: color-mix(in srgb, var(--ink, #000) 22%, transparent);
+    stroke: var(--ink, #000);
+  }
+"#;
+
+/// Build the combined `<style>` block for the active animation and hover
+/// effect, or `None` when the output is fully static.
+fn build_style(render_config: &RenderConfig) -> Option<Style> {
+    let mut css = String::new();
+    match render_config.get_animation() {
+        Animation::Draw => css.push_str(DRAW_CSS),
+        Animation::Settle => css.push_str(SETTLE_CSS),
+        Animation::Scatter => css.push_str(SCATTER_CSS),
+        Animation::None => {}
+    }
+    if render_config.get_hollow_hover() {
+        css.push_str(HOLLOW_HOVER_CSS);
+    }
+    if css.is_empty() {
+        None
+    } else {
+        Some(Style::new(css))
+    }
+}
+
+/// Apply animation/hover classes (and the hover ink variable) to the top-level
+/// text group.
+fn decorate_main_group(mut group: Group, render_config: &RenderConfig, ink: &str) -> Group {
+    let mut classes: Vec<&str> = Vec::new();
+    match render_config.get_animation() {
+        Animation::Settle => classes.push("text-anim-settle"),
+        Animation::Scatter => classes.push("text-anim-scatter"),
+        _ => {}
+    }
+    if render_config.get_hollow_hover() {
+        classes.push("hollow-target");
+        group = group.set("style", format!("--ink:{}", ink));
+    }
+    if !classes.is_empty() {
+        group = group.set("class", classes.join(" "));
+    }
+    group
 }
 
 /// Build an SVG Document from multiple text lines (shared logic for file and text rendering).
@@ -448,6 +676,8 @@ fn build_multiline_doc(
     let mut doc = Document::new();
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new();
+    let mut shard_cache: ShardCache = HashMap::new();
+    let ink = font_config.get_fill_color().to_string();
     let mut main_group = Group::new();
     main_group = main_group
         .set("fill", font_config.get_fill_color().as_str())
@@ -466,6 +696,7 @@ fn build_multiline_doc(
             render_config,
             &mut glyph_cache,
             &mut glyph_defs,
+            &mut shard_cache,
         ) {
             let line_w = line_bbox.width() as u32;
             max_width = max_width.max(line_w);
@@ -489,7 +720,7 @@ fn build_multiline_doc(
             .set("transform", line_group_transform)
             .add(line_content_group);
 
-        if render_config.get_animate() {
+        if render_config.is_draw() {
             let animation_delay = line_index as f32 * 0.8;
             positioned_line_group = positioned_line_group
                 .set("class", "text-line")
@@ -500,20 +731,29 @@ fn build_multiline_doc(
         current_height += line_height;
     }
 
+    main_group = decorate_main_group(main_group, render_config, &ink);
+
     let mut defs = Definitions::new();
-    for (_id, node_box) in glyph_defs.iter() {
+    for node_box in glyph_defs.values() {
         defs = defs.add(node_box.clone());
     }
     doc = doc.add(defs);
     doc = doc.add(main_group);
 
-    if render_config.get_animate() {
-        doc = doc.add(get_animation_style());
+    if let Some(style) = build_style(render_config) {
+        doc = doc.add(style);
+    }
+
+    if let Some(style) = build_style(render_config) {
+        doc = doc.add(style);
     }
 
     doc = doc
         .set("height", current_height)
         .set("width", max_width)
+        // overflow:visible so animated/exploded shards are not clipped when the
+        // SVG is embedded in HTML.
+        .set("overflow", "visible")
         .set("viewBox", format!("0 0 {} {}", max_width, current_height));
 
     Some(doc)
@@ -568,6 +808,7 @@ pub fn render_text_to_svg(
 ) -> Option<Document> {
     let mut glyph_cache: GlyphCache = HashMap::new();
     let mut glyph_defs: GlyphDefs = HashMap::new();
+    let mut shard_cache: ShardCache = HashMap::new();
 
     // Justified rendering takes a dedicated path: Knuth-Plass breaking plus
     // per-line glue expansion at render time.
@@ -612,6 +853,7 @@ pub fn render_text_to_svg(
         render_config,
         &mut glyph_cache,
         &mut glyph_defs,
+        &mut shard_cache,
     ) {
         let height = text_bbox.height() as u32;
         let width = text_bbox.width() as u32;
@@ -623,28 +865,44 @@ pub fn render_text_to_svg(
             text_bbox.height()
         );
 
+        let ink = font_config.get_fill_color().to_string();
         let mut styled_group = text_content_group
             .set("fill", font_config.get_fill_color().as_str())
             .set("stroke", font_config.get_color().as_str());
-        if render_config.get_animate() {
-            styled_group = styled_group.set("class", "text-line");
+
+        // Single line: the styled group is itself the shard/draw container, so
+        // classes go directly on it (no per-line wrapper exists here).
+        let mut classes: Vec<&str> = Vec::new();
+        match render_config.get_animation() {
+            Animation::Draw => classes.push("text-line"),
+            Animation::Settle => classes.push("text-anim-settle"),
+            Animation::Scatter => classes.push("text-anim-scatter"),
+            Animation::None => {}
+        }
+        if render_config.get_hollow_hover() {
+            classes.push("hollow-target");
+            styled_group = styled_group.set("style", format!("--ink:{}", ink));
+        }
+        if !classes.is_empty() {
+            styled_group = styled_group.set("class", classes.join(" "));
         }
 
         let mut defs = Definitions::new();
-        for (_id, node_box) in glyph_defs.iter() {
+        for node_box in glyph_defs.values() {
             defs = defs.add(node_box.clone());
         }
         let mut doc = Document::new();
         doc = doc.add(defs);
         doc = doc.add(styled_group);
 
-        if render_config.get_animate() {
-            doc = doc.add(get_animation_style());
+        if let Some(style) = build_style(render_config) {
+            doc = doc.add(style);
         }
 
         doc = doc
             .set("height", height)
             .set("width", width)
+            .set("overflow", "visible")
             .set("viewBox", view_box);
 
         Some(doc)
@@ -693,7 +951,8 @@ fn text_shape(
 
     if let Some(ft_face) = ft_face {
         if let Some(font_data) = ft_face.copy_font_data() {
-            if let Some(hb_face) = Face::from_slice(&font_data, 0) {
+            if let Some(mut hb_face) = Face::from_slice(&font_data, 0) {
+                hb_face.set_variations(font_config.get_variations());
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(text);
 

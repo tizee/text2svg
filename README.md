@@ -1,6 +1,6 @@
 # text2svg
 
-Convert text to SVG with font shaping, advanced typography (Knuth-Plass justification, hyphenation, CJK micro-spacing), syntax highlighting, and animation support.
+Convert text to SVG with font shaping, advanced typography (Knuth-Plass justification, hyphenation, CJK micro-spacing), syntax highlighting, and glyph-shard animations (settle / scatter / explode, hollow-outline hover).
 
 Works both as a **CLI tool** and as a **reusable Rust library**.
 
@@ -26,14 +26,14 @@ Add to your `Cargo.toml` with default features disabled to avoid pulling in CLI 
 
 ```toml
 [dependencies]
-text2svg = { version = "0.4", default-features = false }
+text2svg = { version = "0.5", default-features = false }
 ```
 
 ## Library Usage
 
 ```rust
 use text2svg::font::{FontConfig, FontStyle};
-use text2svg::render::{RenderConfig, TextAlign};
+use text2svg::render::{Animation, RenderConfig, TextAlign};
 use text2svg::highlight::HighlightSetting;
 use std::path::PathBuf;
 
@@ -41,13 +41,13 @@ use std::path::PathBuf;
 let mut font_config = FontConfig::new(
     "Arial".to_string(),
     48,                    // font size in pixels
-    "none".to_string(),    // fill color
-    "#000".to_string(),    // stroke color
+    "#111827".to_string(), // fill color (solid ink -> readable)
+    "none".to_string(),    // stroke color
     false,                 // debug mode
 ).expect("Failed to load font");
 
 // Configure rendering
-let render_config = RenderConfig::new(false, FontStyle::Regular);
+let render_config = RenderConfig::new(Animation::None, FontStyle::Regular);
 
 // Render text to SVG file
 text2svg::render::render_text_to_svg_file(
@@ -60,7 +60,7 @@ text2svg::render::render_text_to_svg_file(
 // Justified paragraph with optimal (Knuth-Plass) line breaking.
 // Setting a pixel width is required; TextAlign::Justify enables the optimizer,
 // dictionary hyphenation (English), CJK micro-spacing and CJK<->Latin autospace.
-let mut justified = RenderConfig::new(false, FontStyle::Regular);
+let mut justified = RenderConfig::new(Animation::None, FontStyle::Regular);
 justified.set_max_pixel_width(Some(400.0));
 justified.set_align(TextAlign::Justify); // auto-enables Knuth-Plass + hyphenation
 // justified.set_hyphenate(false);       // optional: turn hyphenation off
@@ -69,6 +69,17 @@ text2svg::render::render_text_to_svg_file(
     &mut font_config,
     &justified,
     PathBuf::from("justified.svg"),
+);
+
+// Glyph-shard animation: assemble the glyphs from their strokes on load.
+let mut animated = RenderConfig::new(Animation::Settle, FontStyle::Regular);
+animated.set_hollow_hover(true);        // reveal a hollow outline on hover
+animated.set_explode(Some(120.0));      // shard travel distance in px
+text2svg::render::render_text_to_svg_file(
+    "Dashboard",
+    &mut font_config,
+    &animated,
+    PathBuf::from("animated.svg"),
 );
 
 // Render a file with syntax highlighting
@@ -89,6 +100,7 @@ text2svg::render::render_file_highlight(
 | `text2svg::render` | SVG rendering for plain text and syntax-highlighted files |
 | `text2svg::highlight` | Syntax highlighting settings (themes, syntax sets) |
 | `text2svg::svg` | Low-level SVG glyph path building and caching |
+| `text2svg::shard` | Glyph-shard geometry: contour split, component grouping, scatter direction |
 | `text2svg::utils` | Text wrapping utilities (greedy and Knuth-Plass), hyphenation pre-pass |
 | `text2svg::text_analysis` | Unicode-aware segmentation: CJK, kinsoku, UAX #14 break opportunities |
 | `text2svg::line_break` | Greedy line breaking with kinsoku rules |
@@ -106,16 +118,20 @@ Arguments:
 Options:
       --width <WIDTH>              max width per line (characters)
       --pixel-width <PIXEL_WIDTH>  max width per line (pixels)
-  -f, --file <FILE>                input file
-  -o, --output <OUTPUT>            output svg file path [default: output.svg]
+  -f, --file <FILE>                input file (use "-" for stdin)
+  -o, --output <OUTPUT>            output svg file path (use "-" for stdout) [default: output.svg]
       --font <FONT>                font family name (e.g., "Arial", "Times New Roman")
+      --font-file <FONT_FILE>      path to a font file (.otf/.ttf/.ttc), bypassing the system font database
       --size <SIZE>                font size in pixels [default: 64]
-      --fill <FILL>                svg fill color (e.g., "#ff0000", "none"). Overridden by highlight [default: none]
-      --color <COLOR>              font stroke color (e.g., "#000", "currentColor"). Overridden by highlight [default: #000]
-      --animate                    Add progressive line-by-line draw animation effect (works best with stroke only)
-      --style <STYLE>              font style (regular, bold, italic, etc.). Overridden by highlight [default: regular] [possible values: thin, extralight, light, regular, medium, semibold, bold, extrabold, black, italic]
+      --fill <FILL>                svg fill color (solid ink by default, so text is readable) [default: #111827]
+      --color <COLOR>              stroke color; "none" by default (stroke only shows on hover with --hollow-hover) [default: none]
+      --animation <ANIMATION>      none, draw, settle, scatter [default: none] [possible values: none, draw, settle, scatter]
+      --hollow-hover               Reveal a hollow outline on hover (solid fill -> translucent + stroke)
+      --explode <EXPLODE>          Shard spread amplitude in px; static exploded image when no animation
+      --style <STYLE>              font style by the font's own style name (e.g. "regular", "bold", "9px")
       --space <SPACE>              letter spacing (in em units, e.g., 0.1) [default: 0]
       --features <FEATURES>        font features (e.g., "cv01=1,calt=0,liga=1")
+      --var <VAR>                  variable-font axis settings (e.g., "wght=900,opsz=12")
       --highlight                  Enable syntax highlighting mode for files
       --theme <THEME>              Syntax highlighting theme name or path to .tmTheme file [default: base16-ocean.dark]
       --list-syntax                List supported file types/syntax for highlighting
@@ -124,6 +140,8 @@ Options:
       --no-hyphen                  Disable dictionary hyphenation (only affects justified output)
   -d, --debug                      Enable debug logging
       --list-fonts                 List installed font families
+      --list-axes                  List the variable-font axes (--var tags) and value ranges
+      --list-features              List the OpenType feature tags (--features targets) the font declares
   -h, --help                       Print help
   -V, --version                    Print version
 ```
@@ -135,9 +153,26 @@ Basic text conversion:
 text2svg "Hello World" --font "Arial" --size 48 --output hello.svg
 ```
 
-Animated text with stroke:
+Glyph-shard animation (assemble the glyph strokes on load) with a hollow-outline hover:
 ```bash
-text2svg "Multi-line\nText Animation" --font "Arial" --animate --fill none --color "#000" --output animated.svg
+text2svg "Dashboard" --font "Arial" --animation settle --hollow-hover -o title.svg
+```
+
+Static "exploded" glyph -- each stroke pushed out along its outline vector
+(use a stroke-decomposed variable font and a bold weight for the best effect):
+```bash
+text2svg "永" --font-file SourceHanSerifSC-VF.otf --var wght=900 --explode 84 --size 220 -o exploded.svg
+```
+
+Select a font's own style name (not just the fixed weights):
+```bash
+text2svg "Hi" --font DinkieBitmap --style 9px -o pixel.svg
+```
+
+Discover a font's variable axes and feature tags:
+```bash
+text2svg --font-file SourceHanSerifSC-VF.otf --list-axes      # -> wght  min=250 default=250 max=900  Weight
+text2svg --font "Arial" --list-features
 ```
 
 File with syntax highlighting:
@@ -167,6 +202,33 @@ Justified CJK / mixed CJK + Latin:
 text2svg "使用text2svg渲染CJK和Latin混排2026年效果对比" \
   --font "Arial Unicode MS" --size 40 --pixel-width 260 --align justify -o mixed.svg
 ```
+
+## Glyph Shard Animations
+
+Beyond the legacy per-line `draw` effect, text2svg can split each glyph into
+its **shards** (an outer contour plus the counters it encloses) and animate
+them. Shards, their scatter directions, and the CSS keyframes are all computed
+at generation time, so the output is a self-contained SVG with no runtime
+script.
+
+| Mode | `--animation` | Effect |
+|------|---------------|--------|
+| Settle | `settle` | Shards fade in from their outline vector and assemble once on load |
+| Scatter | `scatter` | Shards continuously scatter outward, fade out, then reassemble (loop) |
+| Draw | `draw` | Legacy per-line stroke reveal (`stroke-dashoffset`) |
+| Explode | `--explode <px>` (no animation) | Static image with each shard pushed out along its vector |
+
+- Each shard flies along its **principal axis** (the largest eigenvector of the
+  contour's area covariance), scaled by how elongated the shape is: long strokes
+  fly far, round bits barely move.
+- **Granularity depends on the font.** A font that stores glyphs as separate,
+  overlapping stroke contours (e.g. `SourceHanSerifSC-VF.otf`) fragments into
+  many shards; a font with merged outlines yields fewer. Load such a font with
+  `--font-file` and pick a weight with `--var`.
+- `--hollow-hover` turns the solid fill into a translucent tint plus a visible
+  stroke on hover. Animations and hover need a browser / HTML embed; a static
+  SVG viewer shows the assembled, filled text.
+- `prefers-reduced-motion` is honored (animations are disabled).
 
 ## Advanced Typography
 
@@ -198,10 +260,11 @@ Notes:
 ## Features
 
 - **Text to SVG Conversion** -- Convert plain text or files to SVG using real font shaping (rustybuzz/HarfBuzz)
-- **Font Customization** -- Font families, sizes, styles, OpenType features, and letter spacing
+- **Font Customization** -- System fonts or direct font files (`--font-file`), the font's own style names (`--style 9px`), variable-font axes (`--var wght=900`), OpenType features, and letter spacing
 - **Advanced Typography** -- Knuth-Plass optimal line breaking, full justification, dictionary hyphenation, CJK micro-spacing, and CJK<->Latin autospace (via `--align justify`)
 - **Syntax Highlighting** -- Built-in syntax highlighting for code files via syntect
-- **Animation Effects** -- Progressive line-by-line drawing animation via SVG stroke-dasharray
+- **Glyph Shard Animations** -- Settle / scatter / explode effects and a hollow-outline hover, plus the legacy line-by-line draw animation
+- **Font Introspection** -- List a font's variable axes (`--list-axes`) and feature tags (`--list-features`)
 - **Text Wrapping** -- Greedy and Knuth-Plass line wrapping with Unicode-aware (UAX #14) segmentation
 - **CJK Support** -- Proper CJK line breaking with kinsoku rules
 
@@ -214,6 +277,15 @@ Notes:
 To use as a library without CLI dependencies:
 
 ```toml
-text2svg = { version = "0.4", default-features = false }
+text2svg = { version = "0.5", default-features = false }
 ```
+
+## Credits
+
+The glyph shard animation (settle / scatter / explode, hollow-outline hover) and
+its covariance principal-axis scatter-direction model are adapted from
+[**yuragi**](https://github.com/lawvs/yuragi) (MIT (c) lawvs and CircuitCoder).
+Yuragi's title-animation study is itself inspired by
+[CircuitCoder/layered](https://github.com/CircuitCoder/layered). Many thanks to
+those projects for the visual idea.
 
